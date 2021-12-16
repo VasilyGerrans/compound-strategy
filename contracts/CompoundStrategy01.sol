@@ -8,6 +8,7 @@ import "./interfaces/IComptroller.sol";
 import "./interfaces/IInterestRateModel.sol";
 import "./interfaces/ICToken.sol";
 import "./interfaces/IPriceOracle.sol";
+import "./interfaces/IWETH9.sol";
 import "hardhat/console.sol";
 
 contract CompoundStrategy01 is Ownable {
@@ -25,34 +26,12 @@ contract CompoundStrategy01 is Ownable {
      */
     IERC20 comp;
 
-    /**
-        @dev Percent of total account liquidity that gets borrowed
-        during Compound loop deposits.
-     */
-    uint256 public defaultBorrowMantissa;
-
     struct CompoundLoop {
         address ctoken;
         address token;
         uint256 depth;
         uint256 borrowMantissa;
         uint256 withdrawMantissa;
-    }
-
-    /**
-     * @dev Local vars for avoiding stack-depth limits in calculating account liquidity.
-     *  Note that `cTokenBalance` is the number of cTokens the account owns in the market,
-     *  whereas `borrowBalance` is the amount of underlying that the account has borrowed.
-     */
-    struct AccountLiquidityLocalVars {
-        uint cTokenBalance;
-        uint borrowBalance;
-        uint exchangeRateMantissa;
-        uint oraclePriceMantissa;
-        uint liquidity;
-        uint collateralFactorMantissa;
-        uint tokensToDenom;
-        uint reserveFactorMantissa;
     }
 
     constructor() {
@@ -72,10 +51,24 @@ contract CompoundStrategy01 is Ownable {
             0.995 * 1e18
         );
 
+        CompoundLoops["DAI"] = CompoundLoop(
+            0x5d3a536E4D6DbD6114cc1Ead35777bAB948E3643,
+            0x6B175474E89094C44Da98b954EedeAC495271d0F,
+            0,
+            0.95 * 1e18,
+            0.995 * 1e18
+        );
+
+        CompoundLoops["USDC"] = CompoundLoop(
+            0x39AA39c021dfbaE8faC545936693aC917d5E7563,
+            0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48,
+            0,
+            0.95 * 1e18,
+            0.995 * 1e18
+        );
+
         comptroller = IComptroller(0x3d9819210A31b4961b30EF54bE2aeD79B9c9Cd3B);
         comp = IERC20(0xc00e94Cb662C3520282E6f5717214004A7f26888);
-
-        defaultBorrowMantissa = 0.95 * 1e18; // 95%
     }
 
     /**
@@ -116,19 +109,23 @@ contract CompoundStrategy01 is Ownable {
         comp.transfer(to, amount);
     }
 
+    function compound_comp_claim_reinvest(string memory Coin, uint256 Count) public onlyOwner {
+        // reinvest earned COMP via Swapper as Coin
+    }
+
+    function compound_comp_reinvest(string memory Coin, uint256 Count) public onlyOwner {
+        // reinvest COMP on balance via Swapper as Coin
+    }
+
     function compound_loop_deposit(string memory Coin, uint256 depth) public onlyOwner {
         CompoundLoop storage loop = CompoundLoops[Coin];
         require(loop.depth == 0, "position already exists");
         for (uint256 i = 0; i < depth; i++) {
-            console.log(i);
             uint256 tokenAmt = IERC20(loop.token).balanceOf(address(this));
 
             _compound_deposit(Coin, tokenAmt);
 
-            uint256 availableBorrowTokens = _get_free_to_borrow(Coin);
-            uint256 B1 = availableBorrowTokens
-                .mul(defaultBorrowMantissa)
-                .div(1e18);
+            uint256 B1 = _get_free_to_borrow(Coin);
             _compound_borrow(Coin, B1);
         }
         _compound_deposit(Coin, IERC20(loop.token).balanceOf(address(this)));
@@ -137,18 +134,13 @@ contract CompoundStrategy01 is Ownable {
 
     function compound_loop_withdraw_all(string memory Coin) public onlyOwner {
         CompoundLoop storage loop = CompoundLoops[Coin];
-        uint256 borrowBalance;
-        uint256 exchangeRateMantissa;
         while(loop.depth > 0) {  
             loop.depth--;
-            console.log(loop.depth);
 
-            uint256 safeRedeemAmt = _get_free_to_withdraw_02(Coin);
-            console.log(_get_free_to_withdraw(Coin));
-            console.log(safeRedeemAmt);
+            uint256 safeRedeemAmt = _get_free_to_withdraw(Coin);
             _compound_withdraw(Coin, safeRedeemAmt);
 
-            (,, borrowBalance, exchangeRateMantissa) = ICToken(loop.ctoken).getAccountSnapshot(address(this));
+            (,, uint256 borrowBalance, uint256 exchangeRateMantissa) = ICToken(loop.ctoken).getAccountSnapshot(address(this));
             uint256 redeemedUnderlying = safeRedeemAmt.mul(exchangeRateMantissa).div(1e18);
             uint256 repayAmt = borrowBalance > redeemedUnderlying ? redeemedUnderlying : borrowBalance;
             if (repayAmt > 0) {
@@ -157,6 +149,35 @@ contract CompoundStrategy01 is Ownable {
             } else {
                 if (loop.depth > 0) {loop.depth = 0;}
                 break;
+            }
+        }
+    }
+
+    /**
+        @dev Partially unwinds the Compound position.
+        @notice The method does not fail if Count is greater than loop depth,
+        but instead calls compound_loop_withdraw_all.
+     */
+    function compound_loop_withdraw_part(string memory Coin, uint256 Count) public onlyOwner {
+        CompoundLoop storage loop = CompoundLoops[Coin];
+        if (Count >= loop.depth) {
+            compound_loop_withdraw_all(Coin);
+        } else {
+            loop.depth -= Count;
+            while(Count > 0) {
+                Count--;
+
+                uint256 safeRedeemAmt = _get_free_to_withdraw(Coin);
+                _compound_withdraw(Coin, safeRedeemAmt);
+
+                (,, uint256 borrowBalance, uint256 exchangeRateMantissa) = ICToken(loop.ctoken).getAccountSnapshot(address(this));
+                uint256 redeemedUnderlying = safeRedeemAmt.mul(exchangeRateMantissa).div(1e18);
+                uint256 repayAmt = borrowBalance > redeemedUnderlying ? redeemedUnderlying : borrowBalance;
+                if (repayAmt > 0) {
+                    _compound_repay(Coin, repayAmt);
+                } else {
+                    break;
+                }
             }
         }
     }
@@ -170,66 +191,30 @@ contract CompoundStrategy01 is Ownable {
     }
 
     function compound_corrector_remove(string memory Coin) public onlyOwner {
-        
-    }
-
-    function _withdraw_001(string memory Coin) private returns (uint256) {
         CompoundLoop storage loop = CompoundLoops[Coin];
-        uint256 borrowBalance;
-        uint256 exchangeRateMantissa;
+        require(loop.depth > 0, "loop depth is already 0");
         
+        loop.depth--;
+
         uint256 safeRedeemAmt = _get_free_to_withdraw(Coin);
         _compound_withdraw(Coin, safeRedeemAmt);
-        
-        (,, borrowBalance, exchangeRateMantissa) = ICToken(loop.ctoken).getAccountSnapshot(address(this));
-        
+
+        (,, uint256 borrowBalance, uint256 exchangeRateMantissa) = ICToken(loop.ctoken).getAccountSnapshot(address(this));
         uint256 redeemedUnderlying = safeRedeemAmt.mul(exchangeRateMantissa).div(1e18);
         uint256 repayAmt = borrowBalance > redeemedUnderlying ? redeemedUnderlying : borrowBalance;
         if (repayAmt > 0) {
+            if (loop.depth == 0) {loop.depth++;}
             _compound_repay(Coin, repayAmt);
+        } else if (loop.depth > 0)  {
+            loop.depth = 0;
         }
-
-        return borrowBalance;
-    }
-
-    function compound_balances(string memory Coin) public view returns(
-        uint256 cTokenBalance,
-        uint256 borrowBalance,
-        uint256 exchangeRate,
-        uint256 free_to_borrow,
-        uint256 free_to_withdraw
-    ) {
-        CompoundLoop storage loop = CompoundLoops[Coin];
-        ICToken ctoken = ICToken(loop.ctoken);
-        AccountLiquidityLocalVars memory vars;
-
-        (, cTokenBalance, borrowBalance, vars.exchangeRateMantissa) = ctoken.getAccountSnapshot(address(this));
-        (, vars.liquidity, ) = comptroller.getAccountLiquidity(address(this));
-
-        free_to_borrow = vars.liquidity
-            .mul(1e18).div(vars.exchangeRateMantissa)   // convert to underlying tokens
-            .mul(loop.borrowMantissa).div(1e18);        // conservative amount
-
-        if (vars.borrowBalance == 0) {
-            free_to_withdraw = vars.cTokenBalance;
-        } else {
-            vars.oraclePriceMantissa = IPriceOracle(comptroller.oracle()).getUnderlyingPrice(address(ctoken));
-            (, vars.collateralFactorMantissa, ) = comptroller.markets(address(ctoken));
-            vars.tokensToDenom = vars.collateralFactorMantissa
-                .mul(vars.exchangeRateMantissa).div(1e18)
-                .mul(vars.oraclePriceMantissa).div(1e18);
-
-            free_to_withdraw = vars.liquidity
-                .mul(1e18).div(vars.tokensToDenom)
-                .mul(loop.withdrawMantissa).div(1e18);
-        }      
     }
 
     /**
         @notice We must deposit the coin into the contract first.
         @param tokenAmt indicates the amount of underlying token we want to depost.
      */
-    function _compound_deposit(string memory Coin, uint256 tokenAmt) public {
+    function _compound_deposit(string memory Coin, uint256 tokenAmt) private {
         ICToken ctoken = ICToken(CompoundLoops[Coin].ctoken);
 
         // we can enter multiple times without a problem
@@ -237,7 +222,7 @@ contract CompoundStrategy01 is Ownable {
         ctokenArray[0] = address(ctoken);
         comptroller.enterMarkets(ctokenArray);
 
-        approveMax(IERC20(CompoundLoops[Coin].token), address(ctoken), tokenAmt);
+        _approve_max(IERC20(CompoundLoops[Coin].token), address(ctoken), tokenAmt);
         ctoken.mint(tokenAmt);
     }
 
@@ -255,11 +240,6 @@ contract CompoundStrategy01 is Ownable {
     }
 
     /**
-        @notice We can only borrow the USD value of our account liquidity.
-        Call comptroller.getAccountLiquidity(address) to check it for  
-        `address`. The second return value is how much liquidity we have. The 
-        third value is how much negative liquidity we have. If we have negative
-        account liquidity, our collateral can be liquidated at any moment.
         @param tokenAmt indicates the amount of underlying tokens we want
         to borrow.
      */
@@ -276,13 +256,12 @@ contract CompoundStrategy01 is Ownable {
      */
     function _compound_repay(string memory Coin, uint256 tokenAmt) private { 
         ICToken ctoken = ICToken(CompoundLoops[Coin].ctoken);
-        approveMax(IERC20(CompoundLoops[Coin].token), address(ctoken), tokenAmt);
+        _approve_max(IERC20(CompoundLoops[Coin].token), address(ctoken), tokenAmt);
         require(ctoken.repayBorrow(tokenAmt) == 0, "_compound_repay fail");
     }
 
-    /** 5%
+    /**
         @return tokens – a safe amount of underlying that can be borrowed.
-        @notice This function only gives conservative approximate amounts.
      */
     function _get_free_to_borrow(string memory Coin) private view returns (uint256 tokens) {
         CompoundLoop storage loop = CompoundLoops[Coin];
@@ -295,31 +274,8 @@ contract CompoundStrategy01 is Ownable {
 
     /**
         @return tokens – a safe amount of ctoken that can be redeemed.
-        @notice This function only gives conservative approximate amounts. 
      */
-    function _get_free_to_withdraw(string memory Coin) private view returns (uint256 tokens) {
-        CompoundLoop storage loop = CompoundLoops[Coin];
-        ICToken ctoken = ICToken(loop.ctoken);
-        AccountLiquidityLocalVars memory vars;
-        
-        (, vars.cTokenBalance, vars.borrowBalance, vars.exchangeRateMantissa) = ctoken.getAccountSnapshot(address(this));
-        if (vars.borrowBalance == 0) {
-            tokens = vars.cTokenBalance;
-        } else {
-            (, vars.liquidity, ) = comptroller.getAccountLiquidity(address(this));
-            vars.oraclePriceMantissa = IPriceOracle(comptroller.oracle()).getUnderlyingPrice(address(ctoken));
-            (, vars.collateralFactorMantissa, ) = comptroller.markets(address(ctoken));
-            vars.tokensToDenom = vars.collateralFactorMantissa
-                .mul(vars.exchangeRateMantissa).div(1e18)
-                .mul(vars.oraclePriceMantissa).div(1e18);
-
-            tokens = vars.liquidity
-                .mul(1e18).div(vars.tokensToDenom)
-                .mul(loop.withdrawMantissa).div(1e18);
-        }       
-    }
-
-    function _get_free_to_withdraw_02(string memory Coin) private view returns (uint256) {
+    function _get_free_to_withdraw(string memory Coin) private view returns (uint256) {
         CompoundLoop storage loop = CompoundLoops[Coin];
         ICToken ctoken = ICToken(loop.ctoken);
 
@@ -337,14 +293,18 @@ contract CompoundStrategy01 is Ownable {
         }
     }
 
-    function approveMax(IERC20 token, address spender, uint256 amount) private {
+    function _approve_max(IERC20 token, address spender, uint256 amount) private {
         if (token.allowance(address(this), spender) < amount) {
             require(token.approve(spender, type(uint256).max), "approve error");
         }
     }
 
     /**
-        @dev analytics view calls. 
+     *
+     *
+     *  @dev analytics view calls. 
+     *
+     *
      */
 
     function compound_stat_strat(string memory Coin) external view returns(

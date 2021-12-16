@@ -3,6 +3,7 @@ const { ethers, network } = require("hardhat");
 const erc20_abi = require("./abi/ERC20_abi.json");
 const cwbtc_abi = require("./abi/cWBTC_abi.json");
 const comptroller_abi = require("./abi/comptroller_abi.json");
+const uniswapv3router_abi = require("./abi/UniswapV3Router_abi.json");
 
 async function logBalances(address, tokens) {
   for (let i = 0; i < tokens.length; i++) {
@@ -23,10 +24,15 @@ async function logAccountLiquidity(comptroller, address) {
 describe("CompoundStrategy01", function () {
   this.timeout(0);
 
-  let CS, 
+  let deployer,
+  CS, 
   cs,
+  UniswapV3Router,
+  WETH,
   WBTC,
   cWBTC,
+  DAI,
+  cDAI,
   COMP,
   comptroller,
   participants,
@@ -37,7 +43,10 @@ describe("CompoundStrategy01", function () {
   const mintAmount = "1000000000"; // 10 WBTC
 
   beforeEach(async () => {
+    [ deployer ] = await ethers.getSigners();
     participants = await ethers.getSigners();
+    participants.shift();
+
     pMint =  "100000000";
     pBorrow = "50000000";
 
@@ -45,101 +54,35 @@ describe("CompoundStrategy01", function () {
     cWBTC = new ethers.Contract("0xccF4429DB6322D5C611ee964527D42E5d685DD6a", cwbtc_abi, ethers.provider);
     COMP = new ethers.Contract("0xc00e94Cb662C3520282E6f5717214004A7f26888", erc20_abi, ethers.provider);
 
-    // Impersonate whale account
+    DAI = new ethers.Contract("0x6B175474E89094C44Da98b954EedeAC495271d0F", erc20_abi, ethers.provider);
+    cDAI = new ethers.Contract("0x5d3a536E4D6DbD6114cc1Ead35777bAB948E3643", cwbtc_abi, ethers.provider);
+
+    WETH = await (await ethers.getContractFactory("WETH9")).attach("0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2");
+
+    UniswapV3Router = new ethers.Contract("0xE592427A0AEce92De3Edee1F18E0157C05861564", uniswapv3router_abi, ethers.provider);
+
+    /* // Impersonate whale account
     whale = await ethers.getSigner(whaleAddress);
     await hre.network.provider.request({
       method: "hardhat_impersonateAccount",
       params: [whaleAddress],
-    });
+    }); */
 
     // give participants some WBTC
-    for (let i = 0; i < 10; i++) {
+
+    /* for (let i = 0; i < 10; i++) {
       const p = participants[i];
       WBTC.connect(whale).transfer(p.address, "2000000000");
-    }
+    } */
     
     CS = await ethers.getContractFactory("CompoundStrategy01");
-    cs = await CS.connect(whale).deploy();
+    cs = await CS.connect(deployer).deploy();
     await cs.deployed();  
     
     comptroller = new ethers.Contract("0x3d9819210A31b4961b30EF54bE2aeD79B9c9Cd3B", comptroller_abi, ethers.provider);
   });
 
-  /////////////////////////////////////
-  //////////// THIS  WORKS ////////////
-  /////////////////////////////////////
-
-  /*
-  it("does regular strat", async () => {
-    await WBTC.connect(whale).transfer(cs.address, mintAmount);
-
-    console.log("AFTER TRANSFER");
-    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
-    await logAccountLiquidity(comptroller, cs.address);
-    
-    await cs.connect(whale)._compound_deposit("WBTC", "1000000000");
-
-    console.log("AFTER DEPOSIT");
-    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
-    await logAccountLiquidity(comptroller, cs.address);
-
-    for (let i = 0; i < 3; i++) {
-      console.log("mint", i);
-      let p = participants[i];
-
-      for (let j = 0; j < 9; j++) { // increase time by 117 seconds with mining
-        await network.provider.send("evm_increaseTime", [13]) 
-        await network.provider.send("evm_mine")
-      }
-
-      await WBTC.connect(p).approve(cWBTC.address, pMint);
-      await cWBTC.connect(p).mint(pMint);
-      console.log("borrow", i);
-      await cWBTC.connect(p).borrow(pBorrow);
-    }
-
-    for (let i = 0; i < 13292; i++) { // do nothing for roughly 2 days
-      await network.provider.send("evm_increaseTime", [13]);
-      await network.provider.send("evm_mine");
-    }
-
-    for (let i = 0; i < 3; i++) {
-      console.log("redeem", i);
-      let p = participants[i];
-
-      for (let j = 0; j < 9; j++) { // increase time by 117 seconds with mining
-        await network.provider.send("evm_increaseTime", [13]) 
-        await network.provider.send("evm_mine")
-      }
-
-      const res = await cWBTC.getAccountSnapshot(p.address);
-
-      await WBTC.connect(p).approve(cWBTC.address, res[2]);
-      await cWBTC.connect(p).repayBorrow(res[2]);
-    }
-
-    console.log("AFTER OTHER USERS");
-    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
-    await logAccountLiquidity(comptroller, cs.address);
-
-    const withdraw = await cWBTC.balanceOf(cs.address);
-
-    console.log("WITHDRAW AMOUNT:", withdraw);
-
-    await cs.connect(whale)._compound_withdraw("WBTC", withdraw);
-
-    console.log("AFTER WITHDRAW");
-    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
-    await logAccountLiquidity(comptroller, cs.address);
-
-    console.log("AFTER CLAIM");
-
-    await cs.connect(whale).compound_comp_claim();
-    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
-    await logAccountLiquidity(comptroller, cs.address);  
-  });
-  */
-
+  /* 
   it("does the same thing but with loops", async () => {
     console.log("\nAFTER TRANSFER");
     await WBTC.connect(whale).transfer(cs.address, "100000000");
@@ -149,7 +92,15 @@ describe("CompoundStrategy01", function () {
     console.log(stat);
     
     console.log("\nAFTER WIND");
-    await cs.connect(whale).compound_loop_deposit("WBTC", 15);
+    await cs.connect(whale).compound_loop_deposit("WBTC", 9);
+    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
+    stat = await cs.compound_stat_strat("WBTC");
+    console.log(stat);
+    console.log("\n");
+
+    console.log("\nAFTER ADD");
+    await cs.connect(whale).compound_corrector_add("WBTC");
     await logBalances(cs.address, [WBTC, cWBTC, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
     stat = await cs.compound_stat_strat("WBTC");
@@ -200,8 +151,22 @@ describe("CompoundStrategy01", function () {
     stat = await cs.compound_stat_strat("WBTC");
     console.log(stat);
 
+    console.log("\nAFTER REMOVE");
+    await cs.connect(whale).compound_corrector_remove("WBTC");
+    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
+    stat = await cs.compound_stat_strat("WBTC");
+    console.log(stat);
+
+    console.log("\nAFTER 3 STEP UNWIND");
+    await cs.connect(whale).compound_loop_withdraw_part("WBTC", 3);
+    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
+    stat = await cs.compound_stat_strat("WBTC");
+    console.log(stat);
+
+    console.log("\nAFTER FULL UNWIND");
     await cs.connect(whale).compound_loop_withdraw_all("WBTC");
-    console.log("\nAFTER UNWIND");
     await logBalances(cs.address, [WBTC, cWBTC, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
     stat = await cs.compound_stat_strat("WBTC");
@@ -214,27 +179,116 @@ describe("CompoundStrategy01", function () {
     stat = await cs.compound_stat_strat("WBTC");
     console.log(stat);
   });
+ */
 
-  /*
-  it("collects stats", async () => {
+  it("DAI strat", async () => {
+    const initialEther = ethers.utils.parseEther("10");
+
+    await WETH.deposit({value: initialEther});
+    await logBalances(deployer.address, [WETH]);
+
+    let deadline = Date.now() + 120; // let the transaction simmer for around 2 minutes
+    await WETH.approve(UniswapV3Router.address, initialEther);
+    await UniswapV3Router.connect(deployer).exactInputSingle([
+      WETH.address, DAI.address, 3000, deployer.address, deadline, initialEther, "0", "0"
+    ]);
+
+    // give each participant 500 bucks
+    const participantBalance = ethers.utils.parseEther("500");
+    for (let i = 0; i < 3; i++) {
+      const element = participants[i];
+      await DAI.connect(deployer).transfer(element.address, participantBalance);
+    }
+
+    await logBalances(deployer.address, [WETH, DAI]);
+
+    const initialDaiBalance = await DAI.balanceOf(deployer.address);
+
     console.log("\nAFTER TRANSFER");
-    await WBTC.connect(whale).transfer(cs.address, "100000000");
-
-    let stat = await cs.compound_stat_strat("WBTC");
-    console.log(stat);
+    await DAI.connect(deployer).transfer(cs.address, initialDaiBalance);
+    await logBalances(cs.address, [DAI, cDAI, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
 
     console.log("\nAFTER WIND");
-    await cs.connect(whale).compound_wind_loop("WBTC", 5);
-
-    stat = await cs.compound_stat_strat("WBTC");
+    await cs.connect(deployer).compound_loop_deposit("DAI", 5);
+    await logBalances(cs.address, [DAI, cDAI, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
+    let stat = await cs.connect(deployer).compound_stat_strat("DAI");
     console.log(stat);
 
-    console.log("\nAFTER UNWIND");
-    await cs.connect(whale).compound_unwind_loop_full("WBTC");
-    stat = await cs.compound_stat_strat("WBTC");
+    console.log("\nAFTER REMOVE");
+    await cs.connect(deployer).compound_corrector_remove("DAI");
+    await logBalances(cs.address, [DAI, cDAI, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
+    stat = await cs.connect(deployer).compound_stat_strat("DAI");
+    console.log(stat);
+
+    for (let i = 0; i < 3; i++) {
+      console.log("user", i, "is depositing");
+      let p = participants[i];
+
+      for (let j = 0; j < 9; j++) { // increase time by 117 seconds with mining
+        await network.provider.send("evm_increaseTime", [13]) 
+        await network.provider.send("evm_mine")
+      }
+
+      await DAI.connect(p).approve(cDAI.address, participantBalance);
+      await cDAI.connect(p).mint(participantBalance);
+      console.log("user", i, "is borrowing");
+      await cDAI.connect(p).borrow("100");
+    }
+
+    console.log("waiting 2 days");
+    for (let i = 0; i < (13292); i++) { // do nothing for roughly 2 days
+      await network.provider.send("evm_increaseTime", [13]);
+      await network.provider.send("evm_mine");
+    }
+
+    for (let i = 0; i < 3; i++) {
+      console.log("user", i, "is redeeming");
+      let p = participants[i];
+
+      for (let j = 0; j < 9; j++) { // increase time by 117 seconds with mining
+        await network.provider.send("evm_increaseTime", [13]) 
+        await network.provider.send("evm_mine")
+      }
+
+      const res = await cDAI.getAccountSnapshot(p.address);
+
+      console.log("user", i, "will return", res[2].toString(), "after borrowing 100 for around 2 days");
+
+      await DAI.connect(p).approve(cDAI.address, res[2]);
+      await cDAI.connect(p).repayBorrow(res[2]);
+    }
+
+    console.log("\nAFTER OTHER USERS");
+    await logBalances(cs.address, [DAI, cDAI, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
+    stat = await cs.connect(deployer).compound_stat_strat("DAI");
+    console.log(stat);
+
+    console.log("\nAFTER FULL UNWIND");
+    await cs.connect(deployer).compound_loop_withdraw_all("DAI");
+    await logBalances(cs.address, [DAI, cDAI, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
+    stat = await cs.compound_stat_strat("DAI");
+    console.log(stat);
+
+    console.log("\nAFTER CLAIM");
+    await cs.connect(deployer).compound_comp_claim_in_markets([cDAI.address]);
+    await logBalances(cs.address, [DAI, cDAI, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
+    stat = await cs.compound_stat_strat("DAI");
     console.log(stat);
   });
-  */
+
+  // DAI
+
+  // initial DAI: 38934571169404199653703
+  // peak cDAI:   582790011504554
+  // peak liq:    13564239243237660687010
+  // final DAI:   38934555729409238860419
+  // final COMP:  49,276,764,635,988,478 = 0.049276...
 
   // 15 loops 
   // cWBTC:         14216526139
