@@ -1,13 +1,13 @@
 pragma solidity ^0.8.10;
 
-import "./InterestRateModelInterface.sol";
+import "./IInterestRateModel.sol";
 
 /**
     @dev Improvised from a contract here:
     https://etherscan.io/address/0xccf4429db6322d5c611ee964527d42e5d685dd6a#code
  */
 
-interface CTokenInterface {
+interface ICToken {
     /*** User Interface ***/
 
     function transfer(address dst, uint amount) external returns (bool);
@@ -29,7 +29,7 @@ interface CTokenInterface {
     function seize(address liquidator, address borrower, uint seizeTokens) external returns (uint);
     function totalBorrows() external view returns(uint);
     function totalReserves() external view returns (uint);
-    function interestRateModel() external view returns (InterestRateModelInterface);
+    function interestRateModel() external view returns (IInterestRateModel);
     function reserveFactorMantissa() external view returns (uint);
     function mint(uint) external returns (uint);
     function redeem(uint redeemTokens) external returns (uint);
@@ -37,4 +37,5 @@ interface CTokenInterface {
     function repayBorrow(uint repayAmount) external returns (uint);
     function redeemUnderlying(uint redeemAmount) external returns (uint);
     function borrowIndex() external view returns(uint);
+    function underlying() external view returns(address);
 }

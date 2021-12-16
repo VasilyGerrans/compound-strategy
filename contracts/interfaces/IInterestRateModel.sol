@@ -5,7 +5,7 @@ pragma solidity ^0.8.10;
     https://etherscan.io/address/0xf2e5db36b0682f2cd6bc805c3a4236194e01f4d5#code
  */
 
-interface InterestRateModelInterface {
+interface IInterestRateModel {
     /**
       * @notice Calculates the current borrow interest rate per block
       * @param cash The total amount of cash the market has

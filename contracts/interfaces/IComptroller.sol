@@ -15,7 +15,7 @@ struct CompMarketState {
     uint32 block;
 }
 
-interface ComptrollerInterface {
+interface IComptroller {
     /*** Assets You Are In ***/
 
     function enterMarkets(address[] calldata cTokens) external returns (uint[] memory);
@@ -91,6 +91,7 @@ interface ComptrollerInterface {
         uint redeemTokens,
         uint borrowAmount) external view returns (uint, uint, uint);
     function claimComp(address holder) external;
+    function claimComp(address holder, address[] memory cTokens) external;
     function oracle() external view returns (address);
     function markets(address cTokenAddress) external view returns (bool, uint, bool);
 
