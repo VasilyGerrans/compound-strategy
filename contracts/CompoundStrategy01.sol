@@ -3,6 +3,7 @@ pragma solidity ^0.8.10;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 import "./interfaces/IComptroller.sol";
@@ -12,7 +13,7 @@ import "./interfaces/IPriceOracle.sol";
 import "./interfaces/IWETH9.sol";
 import "hardhat/console.sol";
 
-contract CompoundStrategy01 is Ownable {
+contract CompoundStrategy01 is AccessControl {
     using SafeMath for uint256;
 
     struct CompoundLoop {
@@ -91,8 +92,10 @@ contract CompoundStrategy01 is Ownable {
         uniswapV3Router = ISwapRouter(0xE592427A0AEce92De3Edee1F18E0157C05861564);
     }
 
+    /// Admin ///
+
     /**
-        @dev Set new mantissas for specific coin.
+        @dev Sets new mantissas and uniswapFee for specific coin.
         @param borrowMantissa set to 0 to leave it unchanged.
         @param withdrawMantissa set to 0 to leave it unchanged.
         @param uniswapFee set to 0 to leave it unchanged.
@@ -102,18 +105,20 @@ contract CompoundStrategy01 is Ownable {
         uint256 borrowMantissa, 
         uint256 withdrawMantissa,
         uint24 uniswapFee
-    ) public onlyOwner {
+    ) public onlyRole(DEFAULT_ADMIN_ROLE) {
         CompoundLoop storage loop = CompoundLoops[Coin];
         loop.borrowMantissa = borrowMantissa == 0 ? loop.borrowMantissa : borrowMantissa;
         loop.withdrawMantissa = withdrawMantissa == 0 ? loop.withdrawMantissa : withdrawMantissa;
         loop.uniswapFee = uniswapFee == 0 ? loop.uniswapFee : uniswapFee;
     }
 
-    function set_custom_swap_strategy(address newCustomSwapStrategy) external onlyOwner {
+    function set_custom_swap_strategy(address newCustomSwapStrategy) external onlyRole(DEFAULT_ADMIN_ROLE) {
         customSwapStrategy = newCustomSwapStrategy;
     }
 
-    function compound_comp_claim() public onlyOwner {
+    /// COMP Management ///
+
+    function compound_comp_claim() public onlyRole(DEFAULT_ADMIN_ROLE) {
         comptroller.claimComp(address(this));
     }
 
@@ -121,7 +126,7 @@ contract CompoundStrategy01 is Ownable {
         @dev Claims tokens for this contract and sends them to 
         `to` address.
      */
-    function compound_comp_claim_to(address to) public onlyOwner returns (uint256 amount) {
+    function compound_comp_claim_to(address to) public onlyRole(DEFAULT_ADMIN_ROLE) returns (uint256 amount) {
         compound_comp_claim();
         amount = comp.balanceOf(address(this));
         comp.transfer(to, amount);
@@ -130,11 +135,11 @@ contract CompoundStrategy01 is Ownable {
     /**
         @dev Claims tokens much more efficiently (saves gas).
      */
-    function compound_comp_claim_in_markets(address[] memory cTokenAddresses) public onlyOwner {
+    function compound_comp_claim_in_markets(address[] memory cTokenAddresses) public onlyRole(DEFAULT_ADMIN_ROLE) {
         comptroller.claimComp(address(this), cTokenAddresses);
     }
 
-    function compound_comp_claim_in_markets_to(address[] memory cTokenAddresses, address to) public onlyOwner returns (uint256 amount) {
+    function compound_comp_claim_in_markets_to(address[] memory cTokenAddresses, address to) public onlyRole(DEFAULT_ADMIN_ROLE) returns (uint256 amount) {
         compound_comp_claim_in_markets(cTokenAddresses);
         amount = comp.balanceOf(address(this));
         comp.transfer(to, amount);
@@ -147,12 +152,12 @@ contract CompoundStrategy01 is Ownable {
         `compound_comp_reinvest`.
         @param minAmountOut is an optional paramter. Set to 0 to ignore.
      */
-    function compound_comp_claim_reinvest(string memory Coin, uint256 Count, uint256 minAmountOut) public onlyOwner {
+    function compound_comp_claim_reinvest(string memory Coin, uint256 Count, uint256 minAmountOut) public onlyRole(DEFAULT_ADMIN_ROLE) {
         compound_comp_claim();
         compound_comp_reinvest(Coin, Count, minAmountOut);
     }
 
-    function compound_comp_reinvest(string memory Coin, uint256 Count, uint256 minAmountOut) public onlyOwner {
+    function compound_comp_reinvest(string memory Coin, uint256 Count, uint256 minAmountOut) public onlyRole(DEFAULT_ADMIN_ROLE) {
         _swap_strategy(Coin, minAmountOut);
         compound_loop_deposit(Coin, Count);
     }
@@ -165,6 +170,8 @@ contract CompoundStrategy01 is Ownable {
             CompoundLoop storage compLoop = CompoundLoops["COMP"];
 
             uint256 tokenAmt = comp.balanceOf(address(this));
+
+            _approve_max(comp, address(uniswapV3Router), tokenAmt);
 
             // Convert to WETH
             uint256 wethOut = uniswapV3Router.exactInputSingle(
@@ -180,6 +187,8 @@ contract CompoundStrategy01 is Ownable {
                 )
             );
 
+            _approve_max(IERC20(wethAddress), address(uniswapV3Router), wethOut);
+
             // Convert to token
             uniswapV3Router.exactInputSingle(
                 ISwapRouter.ExactInputSingleParams(
@@ -194,30 +203,43 @@ contract CompoundStrategy01 is Ownable {
                 )
             );
         } else {
-            // Custom strategy set. Calling it now. 
+            // Custom swap strategy set. Calling it now. 
             IERC20 token = IERC20(loop.token);
+
             uint256 balanceBefore = token.balanceOf(address(this));
-            customSwapStrategy.delegatecall(abi.encodeWithSignature("swap(address,uint256)", loop.token, minAmountOut));
-            uint256 balanceAfter = token.balanceOf(address(this));
-            require(balanceAfter.sub(balanceBefore) >= minAmountOut, "not enough out");
+
+            (bool success,) = customSwapStrategy.delegatecall(abi.encodeWithSignature("swap(address,uint256)", loop.token, minAmountOut));
+            require(success == true, "delegatecall failed");
+
+            require(token.balanceOf(address(this)).sub(balanceBefore) >= minAmountOut, "not enough out");
         }
     }
 
-    function compound_loop_deposit(string memory Coin, uint256 depth) public onlyOwner {
+    /// Compound Strategy ///
+
+    /**
+        @notice Can theoretically wind without limit, but will eventually
+        revert when the token deposit amount is insufficient to give 
+        borrow rights.
+        @param Count specifies the number of strategy loops. Set this to 0
+        to turn this into a simple deposit function. 
+     */
+    function compound_loop_deposit(string memory Coin, uint256 Count) public onlyRole(DEFAULT_ADMIN_ROLE) {
         CompoundLoop storage loop = CompoundLoops[Coin];
-        for (uint256 i = 0; i < depth; i++) {
+        for (uint256 i = 0; i < Count; i++) {
             uint256 tokenAmt = IERC20(loop.token).balanceOf(address(this));
 
             _compound_deposit(Coin, tokenAmt);
 
             uint256 B1 = _get_free_to_borrow(Coin);
+            require(B1 > 0, "not enough tokens in the pool");
             _compound_borrow(Coin, B1);
         }
         _compound_deposit(Coin, IERC20(loop.token).balanceOf(address(this)));
-        loop.depth += depth;
+        loop.depth += Count;
     }
 
-    function compound_loop_withdraw_all(string memory Coin) public onlyOwner {
+    function compound_loop_withdraw_all(string memory Coin) public onlyRole(DEFAULT_ADMIN_ROLE) {
         CompoundLoop storage loop = CompoundLoops[Coin];
         while(loop.depth > 0) {  
             loop.depth--;
@@ -243,7 +265,7 @@ contract CompoundStrategy01 is Ownable {
         @notice The method does not fail if Count is greater than loop depth,
         but instead calls compound_loop_withdraw_all.
      */
-    function compound_loop_withdraw_part(string memory Coin, uint256 Count) public onlyOwner {
+    function compound_loop_withdraw_part(string memory Coin, uint256 Count) public onlyRole(DEFAULT_ADMIN_ROLE) {
         CompoundLoop storage loop = CompoundLoops[Coin];
         if (Count >= loop.depth) {
             compound_loop_withdraw_all(Coin);
@@ -267,7 +289,7 @@ contract CompoundStrategy01 is Ownable {
         }
     }
 
-    function compound_corrector_add(string memory Coin) public onlyOwner {
+    function compound_corrector_add(string memory Coin) public onlyRole(DEFAULT_ADMIN_ROLE) {
         uint256 borrow = _get_free_to_borrow(Coin);
         require(borrow > 0, "not enough tokens in pool");
         CompoundLoops[Coin].depth++;
@@ -275,7 +297,7 @@ contract CompoundStrategy01 is Ownable {
         _compound_deposit(Coin, borrow);
     }
 
-    function compound_corrector_remove(string memory Coin) public onlyOwner {
+    function compound_corrector_remove(string memory Coin) public onlyRole(DEFAULT_ADMIN_ROLE) {
         CompoundLoop storage loop = CompoundLoops[Coin];
         require(loop.depth > 0, "loop depth is already 0");
         
@@ -317,11 +339,6 @@ contract CompoundStrategy01 is Ownable {
     function _compound_withdraw(string memory Coin, uint256 tokenAmt) private { 
         ICToken ctoken = ICToken(CompoundLoops[Coin].ctoken);
         require(ctoken.redeem(tokenAmt) == 0, "_compound_withdraw fail");
-    }
-
-    function _compound_withdraw_all(string memory Coin) private {
-        ICToken ctoken = ICToken(CompoundLoops[Coin].ctoken);
-        require(ctoken.redeem(ctoken.balanceOf(address(this))) == 0, "_compound_withdraw_all fail");
     }
 
     /**
@@ -384,13 +401,7 @@ contract CompoundStrategy01 is Ownable {
         }
     }
 
-    /**
-     *
-     *
-     *  @dev analytics view calls. 
-     *
-     *
-     */
+    /// Analytics ///
 
     function compound_stat_strat(string memory Coin) external view returns(
         uint256 compBorrowSpeeds, // used for calculating compBorrowIndex 
