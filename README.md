@@ -1,6 +1,8 @@
 # Compound Strategy
 
-Contract for winding up a looped supply/borrow position on the [Compound Protocol](https://compound.finance/) for greater COMP reward accumulation.
+Contract for winding and unwinding a looped supply/borrow position on the [Compound Protocol](https://compound.finance/) for greater COMP reward accumulation. 
+
+Can be used as a standalone contract or as part of a larger ecosystem.
 
 ## Usage
 
