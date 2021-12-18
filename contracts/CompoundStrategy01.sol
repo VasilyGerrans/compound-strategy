@@ -10,9 +10,9 @@ import "./interfaces/IInterestRateModel.sol";
 import "./interfaces/ICToken.sol";
 import "./interfaces/IPriceOracle.sol";
 import "./interfaces/IWETH9.sol";
-import "hardhat/console.sol";
+import "./interfaces/ICompoundStrategy.sol";
 
-contract CompoundStrategy01 {
+contract CompoundStrategy01 is ICompoundStrategy {
     using SafeMath for uint256;
 
     struct CompoundLoop {
@@ -24,15 +24,9 @@ contract CompoundStrategy01 {
         uint24 uniswapFee; // identifies the most collateralised UniswapV3 token/WETH pool
     }
 
-    /**
-        @notice Compound market manager.
-     */
     IComptroller private immutable comptroller;
-
     IERC20 private immutable comp;
-
     ISwapRouter private immutable uniswapV3Router;
-
     address private immutable wethAddress;
 
     /**
@@ -44,6 +38,11 @@ contract CompoundStrategy01 {
     mapping(string => CompoundLoop) public CompoundLoops;
 
     mapping(address => bool) public admin;
+
+    modifier onlyAdmin() {
+        require(admin[msg.sender] == true, "not admin");
+        _;
+    }
 
     constructor() {
         admin[msg.sender] = true;
@@ -84,148 +83,11 @@ contract CompoundStrategy01 {
             3000
         );
 
-        wethAddress = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-
         comptroller = IComptroller(0x3d9819210A31b4961b30EF54bE2aeD79B9c9Cd3B);
         comp = IERC20(0xc00e94Cb662C3520282E6f5717214004A7f26888);
-
         uniswapV3Router = ISwapRouter(0xE592427A0AEce92De3Edee1F18E0157C05861564);
+        wethAddress = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     }
-
-    /// Admin ///
-
-    modifier onlyAdmin() {
-        require(admin[msg.sender] == true, "not admin");
-        _;
-    }
-
-    function setAdmin(address user, bool isAdmin) external onlyAdmin {
-        require(msg.sender != user, "self set not allowed");
-        admin[user] = isAdmin;
-    }
-
-    /**
-        @notice This is a dangerous function which can potentially lock us out
-        of the contract. Implemented in order to potentially lock down this 
-        contract when it becomes deprecated.
-     */
-    function renounceAdmin() external onlyAdmin {
-        admin[msg.sender] = false;
-    }
-
-    /**
-        @dev Adds or overwrites existing Compound loop. 
-        @notice Can be used to delete existing loop by setting all 
-        CompoundLoop values to defaults. 
-     */
-    function set_compound_loop(
-        string calldata Coin,
-        CompoundLoop calldata loop 
-    ) public onlyAdmin {
-        CompoundLoops[Coin] = loop;
-    }
-
-    /**
-        @dev Sets new mantissas and uniswapFee for specific coin.
-        @param borrowMantissa set to 0 to leave it unchanged.
-        @param withdrawMantissa set to 0 to leave it unchanged.
-        @param uniswapFee set to 0 to leave it unchanged.
-     */
-    function edit_compound_loop(
-        string calldata Coin, 
-        uint256 borrowMantissa, 
-        uint256 withdrawMantissa,
-        uint24 uniswapFee
-    ) public onlyAdmin {
-        CompoundLoop storage loop = CompoundLoops[Coin];
-        loop.borrowMantissa = borrowMantissa == 0 ? loop.borrowMantissa : borrowMantissa;
-        loop.withdrawMantissa = withdrawMantissa == 0 ? loop.withdrawMantissa : withdrawMantissa;
-        loop.uniswapFee = uniswapFee == 0 ? loop.uniswapFee : uniswapFee;
-    }
-
-    function set_custom_swap_strategy(address newCustomSwapStrategy) external onlyAdmin {
-        customSwapStrategy = newCustomSwapStrategy;
-    }
-
-    /// COMP Management ///
-
-    function compound_comp_claim() public onlyAdmin {
-        comptroller.claimComp(address(this));
-    }
-
-    /**
-        @dev Claims tokens for this contract and sends them to 
-        `to` address.
-     */
-    function compound_comp_claim_to(address to) public onlyAdmin returns (uint256 amount) {
-        compound_comp_claim();
-        amount = comp.balanceOf(address(this));
-        comp.transfer(to, amount);
-    }
-
-    /**
-        @dev Claims tokens much more efficiently (saves gas).
-     */
-    function compound_comp_claim_in_markets(address[] memory cTokenAddresses) public onlyAdmin {
-        comptroller.claimComp(address(this), cTokenAddresses);
-    }
-
-    function compound_comp_claim_in_markets_to(address[] memory cTokenAddresses, address to) public onlyAdmin returns (uint256 amount) {
-        compound_comp_claim_in_markets(cTokenAddresses);
-        amount = comp.balanceOf(address(this));
-        comp.transfer(to, amount);
-    }
-
-    /**
-        @dev Claims all available COMP token and reinvests it into a specific `Coin` position.
-        @notice This is not a gas-optimal call. If this is being called from another
-        contract, it is better to call `compound_comp_claim_in_markets` and then to call
-        `compound_comp_reinvest`.
-        @param amountOutMinimum is an optional paramter. Set to 0 to ignore. Ignoring this 
-        parameter may open the sender to frontrunning attacks.
-     */
-    function compound_comp_claim_reinvest(string calldata Coin, uint256 Count, uint256 amountOutMinimum) public onlyAdmin {
-        compound_comp_claim();
-        compound_comp_reinvest(Coin, Count, amountOutMinimum);
-    }
-
-    function compound_comp_reinvest(string calldata Coin, uint256 Count, uint256 amountOutMinimum) public onlyAdmin {
-        _swap_strategy(Coin, amountOutMinimum);
-        compound_loop_deposit(Coin, Count);
-    }
-
-    function _swap_strategy(string calldata Coin, uint256 amountOutMinimum) private {
-        CompoundLoop storage loop = CompoundLoops[Coin];
-        
-        if (customSwapStrategy == address(0)) {
-            // No custom swap strategy set. Execute default strategy.
-            CompoundLoop storage compLoop = CompoundLoops["COMP"];
-
-            uint256 tokenAmt = comp.balanceOf(address(this));
-
-            _approve_max(comp, address(uniswapV3Router), tokenAmt);
-
-            uniswapV3Router.exactInput(ISwapRouter.ExactInputParams({
-                path: abi.encodePacked(compLoop.token, compLoop.uniswapFee, wethAddress, loop.uniswapFee, loop.token),
-                recipient: address(this),
-                deadline: block.timestamp,
-                amountIn: tokenAmt,
-                amountOutMinimum: amountOutMinimum
-            }));
-        } else {
-            // Custom swap strategy set. Calling it now. 
-            IERC20 token = IERC20(loop.token);
-
-            uint256 balanceBefore = token.balanceOf(address(this));
-
-            (bool success,) = customSwapStrategy.delegatecall(abi.encodeWithSignature("swap(address,uint256)", loop.token, amountOutMinimum));
-            require(success == true, "delegatecall failed");
-
-            require(token.balanceOf(address(this)).sub(balanceBefore) >= amountOutMinimum, "not enough out");
-        }
-    }
-
-    /// Compound Strategy ///
 
     /**
         @notice Can theoretically wind without limit, but will eventually
@@ -328,6 +190,119 @@ contract CompoundStrategy01 {
     }
 
     /**
+        @dev Claims tokens much more efficiently (saves gas).
+     */
+    function compound_comp_claim_in_markets(address[] memory cTokenAddresses) public onlyAdmin {
+        comptroller.claimComp(address(this), cTokenAddresses);
+    }
+
+    function compound_comp_claim_in_markets_to(address[] memory cTokenAddresses, address to) external onlyAdmin returns (uint256 amount) {
+        compound_comp_claim_in_markets(cTokenAddresses);
+        amount = comp.balanceOf(address(this));
+        comp.transfer(to, amount);
+    }
+
+    function compound_comp_claim() public onlyAdmin {
+        comptroller.claimComp(address(this));
+    }
+
+    /**
+        @dev Claims tokens for this contract and sends them to 
+        `to` address.
+     */
+    function compound_comp_claim_to(address to) external onlyAdmin returns (uint256 amount) {
+        compound_comp_claim();
+        amount = comp.balanceOf(address(this));
+        comp.transfer(to, amount);
+    }
+
+    /**
+        @dev Claims all available COMP token and reinvests it into a specific `Coin` position.
+        @notice This is not a gas-optimal call. If this is being called from another
+        contract, it is better to call `compound_comp_claim_in_markets` and then to call
+        `compound_comp_reinvest`.
+        @param amountOutMinimum is an optional paramter. Set to 0 to ignore. Ignoring this 
+        parameter may expose the sender to frontrunning attacks.
+     */
+    function compound_comp_claim_reinvest(string calldata Coin, uint256 Count, uint256 amountOutMinimum) external onlyAdmin {
+        compound_comp_claim();
+        compound_comp_reinvest(Coin, Count, amountOutMinimum);
+    }
+
+    function compound_comp_reinvest(string calldata Coin, uint256 Count, uint256 amountOutMinimum) public onlyAdmin {
+        _swap_strategy(Coin, amountOutMinimum);
+        compound_loop_deposit(Coin, Count);
+    }
+
+    function compound_stat(string calldata Coin) external view returns(
+        uint256 compBorrowSpeeds,
+        uint256 compSupplySpeeds, 
+        uint256 supplyRatePerBlock,
+        uint256 borrowRatePerBlock, 
+        uint256 totalCash, 
+        uint256 totalBorrows,
+        uint256 totalReserves, 
+        uint256 reserveFactorMantissa,
+        uint256 collateralFactorMantissa,
+        uint256 contractCTokenBalance,
+        uint256 contractBorrowBalance
+    ) {
+        ICToken ctoken = ICToken(CompoundLoops[Coin].ctoken);
+
+        compBorrowSpeeds = comptroller.compBorrowSpeeds(address(ctoken));
+        compSupplySpeeds = comptroller.compSupplySpeeds(address(ctoken));
+        supplyRatePerBlock = ctoken.supplyRatePerBlock();
+        borrowRatePerBlock = ctoken.borrowRatePerBlock();
+        totalCash = ctoken.getCash();
+        totalBorrows = ctoken.totalBorrows();
+        totalReserves = ctoken.totalReserves();
+        reserveFactorMantissa = ctoken.reserveFactorMantissa();
+        
+        (, collateralFactorMantissa, ) = comptroller.markets(address(ctoken));
+        (, contractCTokenBalance, contractBorrowBalance, ) = ctoken.getAccountSnapshot(address(this));
+    }
+
+    function setAdmin(address user, bool isAdmin) external onlyAdmin {
+        require(msg.sender != user, "self set not allowed");
+        admin[user] = isAdmin;
+    }
+
+    /**
+        @dev Adds or overwrites existing Compound loop. 
+     */
+    function set_compound_loop(
+        string calldata Coin,
+        address ctoken,
+        address token,
+        uint256 borrowMantissa,
+        uint256 withdrawMantissa,
+        uint24 uniswapFee
+    ) external onlyAdmin {
+        CompoundLoop storage loop = CompoundLoops[Coin];
+        CompoundLoop memory newLoop = CompoundLoop(
+            ctoken == address(0) ? loop.ctoken : ctoken,
+            token == address(0) ? loop.token : token,
+            loop.depth,
+            borrowMantissa == 0 ? loop.borrowMantissa : borrowMantissa,
+            withdrawMantissa == 0 ? loop.withdrawMantissa : withdrawMantissa,
+            uniswapFee == 0 ? loop.uniswapFee : uniswapFee
+        );
+        CompoundLoops[Coin] = newLoop;
+    }
+
+    function set_custom_swap_strategy(address newCustomSwapStrategy) external onlyAdmin {
+        customSwapStrategy = newCustomSwapStrategy;
+    }
+
+    /**
+        @dev An emergency admin backdoor.
+        @notice Can be used to destroy this contract when it becomes deprecated.
+     */
+    function admin_backdoor(address target, bytes calldata data) external onlyAdmin returns(bool, bytes memory) {
+        return target.call(data);
+    } 
+
+    /**
         @notice We must deposit the coin into the contract first.
         @param tokenAmt indicates the amount of underlying token we want to depost.
      */
@@ -405,39 +380,39 @@ contract CompoundStrategy01 {
         }
     }
 
+    function _swap_strategy(string calldata Coin, uint256 amountOutMinimum) private {
+        CompoundLoop storage loop = CompoundLoops[Coin];
+        
+        if (customSwapStrategy == address(0)) {
+            // No custom swap strategy set. Execute default strategy.
+            CompoundLoop storage compLoop = CompoundLoops["COMP"];
+
+            uint256 tokenAmt = comp.balanceOf(address(this));
+
+            _approve_max(comp, address(uniswapV3Router), tokenAmt);
+
+            uniswapV3Router.exactInput(ISwapRouter.ExactInputParams({
+                path: abi.encodePacked(compLoop.token, compLoop.uniswapFee, wethAddress, loop.uniswapFee, loop.token),
+                recipient: address(this),
+                deadline: block.timestamp,
+                amountIn: tokenAmt,
+                amountOutMinimum: amountOutMinimum
+            }));
+        } else {
+            // Custom swap strategy set. Calling it now. 
+            IERC20 token = IERC20(loop.token);
+
+            uint256 balanceBefore = token.balanceOf(address(this));
+
+            (bool success,) = customSwapStrategy.delegatecall(abi.encodeWithSignature("swap(address,uint256)", loop.token, amountOutMinimum));
+            require(success == true, "delegatecall failed");
+            require(token.balanceOf(address(this)).sub(balanceBefore) >= amountOutMinimum, "not enough out");
+        }
+    }
+
     function _approve_max(IERC20 token, address spender, uint256 amount) private {
         if (token.allowance(address(this), spender) < amount) {
             require(token.approve(spender, type(uint256).max), "approve error");
         }
-    }
-
-    /// Analytics ///
-
-    function compound_stat(string calldata Coin) external view returns(
-        uint256 compBorrowSpeeds, // used for calculating compBorrowIndex 
-        uint256 compSupplySpeeds, // used for calculating compSupplyIndex
-        uint256 supplyRatePerBlock, // the current supply rate per block given cash, borrows, reserves, and reserveFactorMantissa 
-        uint256 borrowRatePerBlock, // the current supply rate per block given cash, borrows, reserves, and reserveFactorMantissa 
-        uint256 totalCash, // total non-borrowed tokens in specific market
-        uint256 totalBorrows, // total borrowed tokens in specific market
-        uint256 totalReserves, // total non-borrowed tokens reserved for the protocol (not available for users)
-        uint256 reserveFactorMantissa, // percent mantissa for interest that gets supplied to the protocol
-        uint256 collateralFactorMantissa,
-        uint256 contractCTokenBalance,
-        uint256 contractBorrowBalance
-    ) {
-        ICToken ctoken = ICToken(CompoundLoops[Coin].ctoken);
-
-        compBorrowSpeeds = comptroller.compBorrowSpeeds(address(ctoken));
-        compSupplySpeeds = comptroller.compSupplySpeeds(address(ctoken));
-        supplyRatePerBlock = ctoken.supplyRatePerBlock();
-        borrowRatePerBlock = ctoken.borrowRatePerBlock();
-        totalCash = ctoken.getCash();
-        totalBorrows = ctoken.totalBorrows();
-        totalReserves = ctoken.totalReserves();
-        reserveFactorMantissa = ctoken.reserveFactorMantissa();
-        
-        (, collateralFactorMantissa, ) = comptroller.markets(address(ctoken));
-        (, contractCTokenBalance, contractBorrowBalance, ) = ctoken.getAccountSnapshot(address(this));
     }
 }
