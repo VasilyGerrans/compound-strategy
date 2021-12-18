@@ -6,7 +6,6 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 import "./interfaces/IComptroller.sol";
-import "./interfaces/IInterestRateModel.sol";
 import "./interfaces/ICToken.sol";
 import "./interfaces/IPriceOracle.sol";
 import "./interfaces/IWETH9.sol";
@@ -38,7 +37,6 @@ contract CompoundStrategy01 is ICompoundStrategy {
     mapping(string => CompoundLoop) public CompoundLoops;
 
     mapping(address => bool) public admin;
-
     modifier onlyAdmin() {
         require(admin[msg.sender] == true, "not admin");
         _;
@@ -89,13 +87,6 @@ contract CompoundStrategy01 is ICompoundStrategy {
         wethAddress = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     }
 
-    /**
-        @notice Can theoretically wind without limit, but will eventually
-        revert when the token deposit amount is insufficient to give any 
-        additional borrow amount.
-        @param Count specifies the number of strategy loops. Set this to 0
-        to turn this into a simple deposit function. 
-     */
     function compound_loop_deposit(string calldata Coin, uint256 Count) public onlyAdmin {
         CompoundLoop storage loop = CompoundLoops[Coin];
         for (uint256 i = 0; i < Count; i++) {
@@ -132,11 +123,6 @@ contract CompoundStrategy01 is ICompoundStrategy {
         }
     }
 
-    /**
-        @dev Partially unwinds the Compound position.
-        @notice The method does not fail if Count is greater than loop depth,
-        but instead calls compound_loop_withdraw_all.
-     */
     function compound_loop_withdraw_part(string calldata Coin, uint256 Count) public onlyAdmin {
         CompoundLoop storage loop = CompoundLoops[Coin];
         if (Count >= loop.depth) {
@@ -189,9 +175,6 @@ contract CompoundStrategy01 is ICompoundStrategy {
         }
     }
 
-    /**
-        @dev Claims tokens much more efficiently (saves gas).
-     */
     function compound_comp_claim_in_markets(address[] memory cTokenAddresses) public onlyAdmin {
         comptroller.claimComp(address(this), cTokenAddresses);
     }
@@ -206,24 +189,12 @@ contract CompoundStrategy01 is ICompoundStrategy {
         comptroller.claimComp(address(this));
     }
 
-    /**
-        @dev Claims tokens for this contract and sends them to 
-        `to` address.
-     */
     function compound_comp_claim_to(address to) external onlyAdmin returns (uint256 amount) {
         compound_comp_claim();
         amount = comp.balanceOf(address(this));
         comp.transfer(to, amount);
     }
 
-    /**
-        @dev Claims all available COMP token and reinvests it into a specific `Coin` position.
-        @notice This is not a gas-optimal call. If this is being called from another
-        contract, it is better to call `compound_comp_claim_in_markets` and then to call
-        `compound_comp_reinvest`.
-        @param amountOutMinimum is an optional paramter. Set to 0 to ignore. Ignoring this 
-        parameter may expose the sender to frontrunning attacks.
-     */
     function compound_comp_claim_reinvest(string calldata Coin, uint256 Count, uint256 amountOutMinimum) external onlyAdmin {
         compound_comp_claim();
         compound_comp_reinvest(Coin, Count, amountOutMinimum);
