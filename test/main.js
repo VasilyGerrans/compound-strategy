@@ -90,14 +90,14 @@ describe("CompoundStrategy01", function () {
     await WBTC.connect(whale).transfer(cs.address, "100000000");
     await logBalances(cs.address, [WBTC, cWBTC, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
-    let stat = await cs.compound_stat_strat("WBTC");
+    let stat = await cs.compound_stat("WBTC");
     console.log(stat);
     
     console.log("\nAFTER WIND");
     await cs.connect(whale).compound_loop_deposit("WBTC", 9);
     await logBalances(cs.address, [WBTC, cWBTC, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
-    stat = await cs.compound_stat_strat("WBTC");
+    stat = await cs.compound_stat("WBTC");
     console.log(stat);
     console.log("\n");
 
@@ -105,7 +105,7 @@ describe("CompoundStrategy01", function () {
     await cs.connect(whale).compound_corrector_add("WBTC");
     await logBalances(cs.address, [WBTC, cWBTC, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
-    stat = await cs.compound_stat_strat("WBTC");
+    stat = await cs.compound_stat("WBTC");
     console.log(stat);
     console.log("\n");
 
@@ -150,40 +150,116 @@ describe("CompoundStrategy01", function () {
     console.log("\nAFTER OTHER USERS");
     await logBalances(cs.address, [WBTC, cWBTC, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
-    stat = await cs.compound_stat_strat("WBTC");
+    stat = await cs.compound_stat("WBTC");
     console.log(stat);
 
     console.log("\nAFTER REMOVE");
     await cs.connect(whale).compound_corrector_remove("WBTC");
     await logBalances(cs.address, [WBTC, cWBTC, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
-    stat = await cs.compound_stat_strat("WBTC");
+    stat = await cs.compound_stat("WBTC");
     console.log(stat);
 
     console.log("\nAFTER 3 STEP UNWIND");
     await cs.connect(whale).compound_loop_withdraw_part("WBTC", 3);
     await logBalances(cs.address, [WBTC, cWBTC, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
-    stat = await cs.compound_stat_strat("WBTC");
+    stat = await cs.compound_stat("WBTC");
     console.log(stat);
 
     console.log("\nAFTER FULL UNWIND");
     await cs.connect(whale).compound_loop_withdraw_all("WBTC");
     await logBalances(cs.address, [WBTC, cWBTC, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
-    stat = await cs.compound_stat_strat("WBTC");
+    stat = await cs.compound_stat("WBTC");
     console.log(stat);
 
     console.log("\nAFTER CLAIM");
     await cs.connect(whale).compound_comp_claim_in_markets([cWBTC.address]);
     await logBalances(cs.address, [WBTC, cWBTC, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
-    stat = await cs.compound_stat_strat("WBTC");
+    stat = await cs.compound_stat("WBTC");
     console.log(stat);
   });
  */
 
-  it("does nice multicall on Uniswap v3", async () => {
+  /* it("swaps correctly", async () => {
+    const initialEther = ethers.utils.parseEther("10");
+    await WETH.deposit({value: initialEther});
+    await WETH.approve(UniswapV3Router.address, initialEther);
+    await UniswapV3Router.connect(deployer).exactInputSingle([
+      WETH.address, WBTC.address, 3000, deployer.address, Date.now() + 120, ethers.utils.parseEther("5"), "0", "0"
+    ]);
+
+    const WBTCbalance = await WBTC.balanceOf(deployer.address);
+    // await WBTC.connect(deployer).transfer(cs.address, WBTCbalance);
+    
+    await COMP.connect(deployer).approve(UniswapV3Router.address, initialEther);
+    await UniswapV3Router.connect(deployer).exactInputSingle([
+      WETH.address, COMP.address, 3000, deployer.address, Date.now() + 120, ethers.utils.parseEther("5"), "0", "0"
+    ]);
+
+    const COMPbalance = await COMP.balanceOf(deployer.address);
+    await COMP.connect(deployer).transfer(cs.address, COMPbalance);
+
+    console.log(WBTCbalance, COMPbalance);
+    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
+
+    await cs.connect(deployer)._swap_strategy("WBTC", 0);
+
+    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
+  }); */
+
+  it("reinvests accrued COMP", async () => {
+    const initialEther = ethers.utils.parseEther("10");
+    await WETH.deposit({value: initialEther});
+    await WETH.approve(UniswapV3Router.address, initialEther);
+    await UniswapV3Router.connect(deployer).exactInputSingle([
+      WETH.address, WBTC.address, 3000, deployer.address, Date.now() + 120, initialEther, "0", "0"
+    ]);
+
+    const WBTCbalance = await WBTC.balanceOf(deployer.address);
+
+    console.log("\nAFTER TRANSFER");
+    await WBTC.connect(deployer).transfer(cs.address, WBTCbalance);
+    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
+    let stat = await cs.compound_stat("WBTC");
+    console.log(stat);
+
+    console.log("\nAFTER WIND");
+    await cs.connect(deployer).compound_loop_deposit("WBTC", 5);
+    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
+    stat = await cs.connect(deployer).compound_stat("WBTC");
+    console.log(stat);
+
+    console.log("waiting 2 days");
+    for (let i = 0; i < (13292); i++) { // do nothing for roughly 2 days
+      await network.provider.send("evm_increaseTime", [13]);
+      await network.provider.send("evm_mine");
+    }
+
+    console.log("\nAFTER REINVEST");
+    // await cs.connect(deployer).compound_comp_claim_reinvest("WBTC", 1, 0);
+    await cs.connect(deployer).compound_comp_claim_in_markets([cWBTC.address]);
+    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
+    await cs.connect(deployer).compound_comp_reinvest("WBTC", 0, 0);
+    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
+    stat = await cs.connect(deployer).compound_stat("WBTC");
+    console.log(stat);
+
+    console.log("\nAFTER FULL UNWIND");
+    await cs.connect(deployer).compound_loop_withdraw_all("WBTC");
+    await logBalances(cs.address, [WBTC, cWBTC, COMP]);
+    await logAccountLiquidity(comptroller, cs.address);
+    stat = await cs.compound_stat("WBTC");
+    console.log(stat);
+  });
+
+  /* it("does nice multicall on Uniswap v3", async () => {
     const initialEther = ethers.utils.parseEther("10");
     await WETH.deposit({value: initialEther});
     await WETH.approve(UniswapV3Router.address, initialEther);
@@ -198,7 +274,7 @@ describe("CompoundStrategy01", function () {
     await UniswapV3Router.connect(deployer).multicall([encodedSwap0]);
 
     await logBalances(deployer.address, [WETH, DAI]);
-  });
+  }); */
 
   /* it("DAI strat", async () => {
     const initialEther = ethers.utils.parseEther("10");
@@ -232,14 +308,14 @@ describe("CompoundStrategy01", function () {
     await cs.connect(deployer).compound_loop_deposit("DAI", 5);
     await logBalances(cs.address, [DAI, cDAI, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
-    let stat = await cs.connect(deployer).compound_stat_strat("DAI");
+    let stat = await cs.connect(deployer).compound_stat("DAI");
     console.log(stat);
 
     console.log("\nAFTER REMOVE");
     await cs.connect(deployer).compound_corrector_remove("DAI");
     await logBalances(cs.address, [DAI, cDAI, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
-    stat = await cs.connect(deployer).compound_stat_strat("DAI");
+    stat = await cs.connect(deployer).compound_stat("DAI");
     console.log(stat);
 
     for (let i = 0; i < 3; i++) {
@@ -283,21 +359,21 @@ describe("CompoundStrategy01", function () {
     console.log("\nAFTER OTHER USERS");
     await logBalances(cs.address, [DAI, cDAI, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
-    stat = await cs.connect(deployer).compound_stat_strat("DAI");
+    stat = await cs.connect(deployer).compound_stat("DAI");
     console.log(stat);
 
     console.log("\nAFTER FULL UNWIND");
     await cs.connect(deployer).compound_loop_withdraw_all("DAI");
     await logBalances(cs.address, [DAI, cDAI, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
-    stat = await cs.compound_stat_strat("DAI");
+    stat = await cs.compound_stat("DAI");
     console.log(stat);
 
     console.log("\nAFTER CLAIM");
     await cs.connect(deployer).compound_comp_claim_in_markets([cDAI.address]);
     await logBalances(cs.address, [DAI, cDAI, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
-    stat = await cs.compound_stat_strat("DAI");
+    stat = await cs.compound_stat("DAI");
     console.log(stat);
   }); */
 
