@@ -4,6 +4,7 @@ pragma solidity ^0.8.10;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 import "./interfaces/IComptroller.sol";
 import "./interfaces/IInterestRateModel.sol";
 import "./interfaces/ICToken.sol";
@@ -14,7 +15,14 @@ import "hardhat/console.sol";
 contract CompoundStrategy01 is Ownable {
     using SafeMath for uint256;
 
-    mapping(string => CompoundLoop) public CompoundLoops;
+    struct CompoundLoop {
+        address ctoken;
+        address token;
+        uint256 depth;
+        uint256 borrowMantissa;
+        uint256 withdrawMantissa;
+        uint24 uniswapFee; // identifies the most collateralised UniswapV3 token/WETH pool
+    }
 
     /**
         @notice Compound market manager.
@@ -26,13 +34,17 @@ contract CompoundStrategy01 is Ownable {
      */
     IERC20 comp;
 
-    struct CompoundLoop {
-        address ctoken;
-        address token;
-        uint256 depth;
-        uint256 borrowMantissa;
-        uint256 withdrawMantissa;
-    }
+    ISwapRouter uniswapV3Router;
+
+    address wethAddress;
+
+    /**
+        @dev An optional address for upgradable swap strategies. If set
+        to address(0), a default uniswapV3 strategy is executed (see `_swap_strategy`).
+     */
+    address customSwapStrategy;
+
+    mapping(string => CompoundLoop) public CompoundLoops;
 
     constructor() {
         CompoundLoops["WBTC"] = CompoundLoop(
@@ -40,7 +52,8 @@ contract CompoundStrategy01 is Ownable {
             0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599,
             0,
             0.95 * 1e18,    // 95%
-            0.995 * 1e18    // 99.5%
+            0.995 * 1e18,   // 99.5%
+            3000
         );
 
         CompoundLoops["COMP"] = CompoundLoop(
@@ -48,7 +61,8 @@ contract CompoundStrategy01 is Ownable {
             0xc00e94Cb662C3520282E6f5717214004A7f26888, 
             0,
             0.95 * 1e18,
-            0.995 * 1e18
+            0.995 * 1e18,
+            3000
         );
 
         CompoundLoops["DAI"] = CompoundLoop(
@@ -56,7 +70,8 @@ contract CompoundStrategy01 is Ownable {
             0x6B175474E89094C44Da98b954EedeAC495271d0F,
             0,
             0.95 * 1e18,
-            0.995 * 1e18
+            0.995 * 1e18,
+            500
         );
 
         CompoundLoops["USDC"] = CompoundLoop(
@@ -64,22 +79,38 @@ contract CompoundStrategy01 is Ownable {
             0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48,
             0,
             0.95 * 1e18,
-            0.995 * 1e18
+            0.995 * 1e18,
+            3000
         );
+
+        wethAddress = 0xc778417E063141139Fce010982780140Aa0cD5Ab;
 
         comptroller = IComptroller(0x3d9819210A31b4961b30EF54bE2aeD79B9c9Cd3B);
         comp = IERC20(0xc00e94Cb662C3520282E6f5717214004A7f26888);
+
+        uniswapV3Router = ISwapRouter(0xE592427A0AEce92De3Edee1F18E0157C05861564);
     }
 
     /**
         @dev Set new mantissas for specific coin.
         @param borrowMantissa set to 0 to leave it unchanged.
         @param withdrawMantissa set to 0 to leave it unchanged.
+        @param uniswapFee set to 0 to leave it unchanged.
      */
-    function set_loop_mantissas(string memory Coin, uint256 borrowMantissa, uint256 withdrawMantissa) public onlyOwner {
+    function set_compound_loop(
+        string memory Coin, 
+        uint256 borrowMantissa, 
+        uint256 withdrawMantissa,
+        uint24 uniswapFee
+    ) public onlyOwner {
         CompoundLoop storage loop = CompoundLoops[Coin];
         loop.borrowMantissa = borrowMantissa == 0 ? loop.borrowMantissa : borrowMantissa;
         loop.withdrawMantissa = withdrawMantissa == 0 ? loop.withdrawMantissa : withdrawMantissa;
+        loop.uniswapFee = uniswapFee == 0 ? loop.uniswapFee : uniswapFee;
+    }
+
+    function set_custom_swap_strategy(address newCustomSwapStrategy) external onlyOwner {
+        customSwapStrategy = newCustomSwapStrategy;
     }
 
     function compound_comp_claim() public onlyOwner {
@@ -109,17 +140,71 @@ contract CompoundStrategy01 is Ownable {
         comp.transfer(to, amount);
     }
 
-    function compound_comp_claim_reinvest(string memory Coin, uint256 Count) public onlyOwner {
-        // reinvest earned COMP via Swapper as Coin
+    /**
+        @dev Claims all available COMP token and reinvests it into a specific `Coin` position.
+        @notice This is not a gas-optimal call. If this is being called from another
+        contract, it is better to call `compound_comp_claim_in_markets` and then to call
+        `compound_comp_reinvest`.
+        @param minAmountOut is an optional paramter. Set to 0 to ignore.
+     */
+    function compound_comp_claim_reinvest(string memory Coin, uint256 Count, uint256 minAmountOut) public onlyOwner {
+        compound_comp_claim();
+        compound_comp_reinvest(Coin, Count, minAmountOut);
     }
 
-    function compound_comp_reinvest(string memory Coin, uint256 Count) public onlyOwner {
-        // reinvest COMP on balance via Swapper as Coin
+    function compound_comp_reinvest(string memory Coin, uint256 Count, uint256 minAmountOut) public onlyOwner {
+        _swap_strategy(Coin, minAmountOut);
+        compound_loop_deposit(Coin, Count);
+    }
+
+    function _swap_strategy(string memory Coin, uint256 minAmountOut) private {
+        CompoundLoop storage loop = CompoundLoops[Coin];
+        
+        if (customSwapStrategy == address(0)) {
+            // No custom swap strategy set. Execute default strategy.
+            CompoundLoop storage compLoop = CompoundLoops["COMP"];
+
+            uint256 tokenAmt = comp.balanceOf(address(this));
+
+            // Convert to WETH
+            uint256 wethOut = uniswapV3Router.exactInputSingle(
+                ISwapRouter.ExactInputSingleParams(
+                    compLoop.token,
+                    wethAddress,
+                    compLoop.uniswapFee,
+                    address(this),
+                    block.timestamp,
+                    tokenAmt,
+                    0,
+                    0
+                )
+            );
+
+            // Convert to token
+            uniswapV3Router.exactInputSingle(
+                ISwapRouter.ExactInputSingleParams(
+                    wethAddress,
+                    loop.token,
+                    loop.uniswapFee,
+                    address(this),
+                    block.timestamp,
+                    wethOut,
+                    minAmountOut,
+                    0
+                )
+            );
+        } else {
+            // Custom strategy set. Calling it now. 
+            IERC20 token = IERC20(loop.token);
+            uint256 balanceBefore = token.balanceOf(address(this));
+            customSwapStrategy.delegatecall(abi.encodeWithSignature("swap(address,uint256)", loop.token, minAmountOut));
+            uint256 balanceAfter = token.balanceOf(address(this));
+            require(balanceAfter.sub(balanceBefore) >= minAmountOut, "not enough out");
+        }
     }
 
     function compound_loop_deposit(string memory Coin, uint256 depth) public onlyOwner {
         CompoundLoop storage loop = CompoundLoops[Coin];
-        require(loop.depth == 0, "position already exists");
         for (uint256 i = 0; i < depth; i++) {
             uint256 tokenAmt = IERC20(loop.token).balanceOf(address(this));
 
@@ -129,7 +214,7 @@ contract CompoundStrategy01 is Ownable {
             _compound_borrow(Coin, B1);
         }
         _compound_deposit(Coin, IERC20(loop.token).balanceOf(address(this)));
-        loop.depth = depth;
+        loop.depth += depth;
     }
 
     function compound_loop_withdraw_all(string memory Coin) public onlyOwner {

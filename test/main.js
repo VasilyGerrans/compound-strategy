@@ -28,6 +28,7 @@ describe("CompoundStrategy01", function () {
   CS, 
   cs,
   UniswapV3Router,
+  UniswapV3Interface,
   WETH,
   WBTC,
   cWBTC,
@@ -60,6 +61,7 @@ describe("CompoundStrategy01", function () {
     WETH = await (await ethers.getContractFactory("WETH9")).attach("0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2");
 
     UniswapV3Router = new ethers.Contract("0xE592427A0AEce92De3Edee1F18E0157C05861564", uniswapv3router_abi, ethers.provider);
+    UniswapV3Interface = new ethers.utils.Interface(uniswapv3router_abi);
 
     /* // Impersonate whale account
     whale = await ethers.getSigner(whaleAddress);
@@ -181,7 +183,24 @@ describe("CompoundStrategy01", function () {
   });
  */
 
-  it("DAI strat", async () => {
+  it("does nice multicall on Uniswap v3", async () => {
+    const initialEther = ethers.utils.parseEther("10");
+    await WETH.deposit({value: initialEther});
+    await WETH.approve(UniswapV3Router.address, initialEther);
+
+    // console.log(UniswapV3Interface);
+    const encodedSwap0 = UniswapV3Interface.encodeFunctionData('exactInputSingle', [
+      [WETH.address, DAI.address, 3000, deployer.address, Date.now() + 120, initialEther, "0", "0"]
+    ]);
+
+    console.log(encodedSwap0);
+
+    await UniswapV3Router.connect(deployer).multicall([encodedSwap0]);
+
+    await logBalances(deployer.address, [WETH, DAI]);
+  });
+
+  /* it("DAI strat", async () => {
     const initialEther = ethers.utils.parseEther("10");
 
     await WETH.deposit({value: initialEther});
@@ -280,7 +299,7 @@ describe("CompoundStrategy01", function () {
     await logAccountLiquidity(comptroller, cs.address);
     stat = await cs.compound_stat_strat("DAI");
     console.log(stat);
-  });
+  }); */
 
   // DAI
 
