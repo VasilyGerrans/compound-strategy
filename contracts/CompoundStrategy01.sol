@@ -42,7 +42,7 @@ contract CompoundStrategy01 is ICompoundStrategy {
     }
 
     constructor() {
-        admin[address(this)] = true;
+        admin[address(this)] = true; // allows the contract to call itself via `admin_backdoor`
         admin[msg.sender] = true;
 
         CompoundLoops["WBTC"] = CompoundLoop(
