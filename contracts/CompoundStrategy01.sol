@@ -17,7 +17,6 @@ contract CompoundStrategy01 is ICompoundStrategy {
     struct CompoundLoop {
         address ctoken;
         address token;
-        uint256 depth;
         uint256 borrowMantissa;
         uint256 withdrawMantissa;
         uint24 uniswapFee; // identifies the most collateralised UniswapV3 token/WETH pool
@@ -49,7 +48,6 @@ contract CompoundStrategy01 is ICompoundStrategy {
         CompoundLoops["WBTC"] = CompoundLoop(
             0xccF4429DB6322D5C611ee964527D42E5d685DD6a,
             0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599,
-            0,
             0.95 * 1e18,    // 95%
             0.995 * 1e18,   // 99.5%
             3000
@@ -58,7 +56,6 @@ contract CompoundStrategy01 is ICompoundStrategy {
         CompoundLoops["COMP"] = CompoundLoop(
             0x70e36f6BF80a52b3B46b3aF8e106CC0ed743E8e4,
             0xc00e94Cb662C3520282E6f5717214004A7f26888, 
-            0,
             0.95 * 1e18,
             0.995 * 1e18,
             3000
@@ -67,7 +64,6 @@ contract CompoundStrategy01 is ICompoundStrategy {
         CompoundLoops["DAI"] = CompoundLoop(
             0x5d3a536E4D6DbD6114cc1Ead35777bAB948E3643,
             0x6B175474E89094C44Da98b954EedeAC495271d0F,
-            0,
             0.95 * 1e18,
             0.995 * 1e18,
             500
@@ -76,7 +72,6 @@ contract CompoundStrategy01 is ICompoundStrategy {
         CompoundLoops["USDC"] = CompoundLoop(
             0x39AA39c021dfbaE8faC545936693aC917d5E7563,
             0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48,
-            0,
             0.95 * 1e18,
             0.995 * 1e18,
             3000
@@ -100,13 +95,31 @@ contract CompoundStrategy01 is ICompoundStrategy {
             _compound_borrow(Coin, B1);
         }
         _compound_deposit(Coin, IERC20(loop.token).balanceOf(address(this)));
-        loop.depth += Count;
     }
 
     function compound_loop_withdraw_all(string calldata Coin) public onlyAdmin {
         CompoundLoop storage loop = CompoundLoops[Coin];
-        while(loop.depth > 0) {  
-            loop.depth--;
+        bool withdrawing = true;
+        while(withdrawing) {  
+            uint256 safeRedeemAmt = _get_free_to_withdraw(Coin);
+            _compound_withdraw(Coin, safeRedeemAmt);
+
+            (,, uint256 borrowBalance, uint256 exchangeRateMantissa) = ICToken(loop.ctoken).getAccountSnapshot(address(this));
+            uint256 redeemedUnderlying = safeRedeemAmt.mul(exchangeRateMantissa).div(1e18);
+            uint256 repayAmt = borrowBalance > redeemedUnderlying ? redeemedUnderlying : borrowBalance;
+            if (repayAmt > 0) {
+                _compound_repay(Coin, repayAmt);
+            } else {
+                withdrawing = false;
+                break;
+            }
+        }
+    }
+
+    function compound_loop_withdraw_part(string calldata Coin, uint256 Count) public onlyAdmin {
+        CompoundLoop storage loop = CompoundLoops[Coin];
+        while(Count > 0) {
+            Count--;
 
             uint256 safeRedeemAmt = _get_free_to_withdraw(Coin);
             _compound_withdraw(Coin, safeRedeemAmt);
@@ -115,35 +128,9 @@ contract CompoundStrategy01 is ICompoundStrategy {
             uint256 redeemedUnderlying = safeRedeemAmt.mul(exchangeRateMantissa).div(1e18);
             uint256 repayAmt = borrowBalance > redeemedUnderlying ? redeemedUnderlying : borrowBalance;
             if (repayAmt > 0) {
-                if (loop.depth == 0) {loop.depth++;}
                 _compound_repay(Coin, repayAmt);
             } else {
-                if (loop.depth > 0) {loop.depth = 0;}
                 break;
-            }
-        }
-    }
-
-    function compound_loop_withdraw_part(string calldata Coin, uint256 Count) public onlyAdmin {
-        CompoundLoop storage loop = CompoundLoops[Coin];
-        if (Count >= loop.depth) {
-            compound_loop_withdraw_all(Coin);
-        } else {
-            loop.depth -= Count;
-            while(Count > 0) {
-                Count--;
-
-                uint256 safeRedeemAmt = _get_free_to_withdraw(Coin);
-                _compound_withdraw(Coin, safeRedeemAmt);
-
-                (,, uint256 borrowBalance, uint256 exchangeRateMantissa) = ICToken(loop.ctoken).getAccountSnapshot(address(this));
-                uint256 redeemedUnderlying = safeRedeemAmt.mul(exchangeRateMantissa).div(1e18);
-                uint256 repayAmt = borrowBalance > redeemedUnderlying ? redeemedUnderlying : borrowBalance;
-                if (repayAmt > 0) {
-                    _compound_repay(Coin, repayAmt);
-                } else {
-                    break;
-                }
             }
         }
     }
@@ -151,16 +138,12 @@ contract CompoundStrategy01 is ICompoundStrategy {
     function compound_corrector_add(string calldata Coin) public onlyAdmin {
         uint256 borrow = _get_free_to_borrow(Coin);
         require(borrow > 0, "not enough tokens in pool");
-        CompoundLoops[Coin].depth++;
         _compound_borrow(Coin, borrow);
         _compound_deposit(Coin, borrow);
     }
 
     function compound_corrector_remove(string calldata Coin) public onlyAdmin {
         CompoundLoop storage loop = CompoundLoops[Coin];
-        require(loop.depth > 0, "loop depth is already 0");
-        
-        loop.depth--;
 
         uint256 safeRedeemAmt = _get_free_to_withdraw(Coin);
         _compound_withdraw(Coin, safeRedeemAmt);
@@ -169,10 +152,7 @@ contract CompoundStrategy01 is ICompoundStrategy {
         uint256 redeemedUnderlying = safeRedeemAmt.mul(exchangeRateMantissa).div(1e18);
         uint256 repayAmt = borrowBalance > redeemedUnderlying ? redeemedUnderlying : borrowBalance;
         if (repayAmt > 0) {
-            if (loop.depth == 0) {loop.depth++;}
             _compound_repay(Coin, repayAmt);
-        } else if (loop.depth > 0)  {
-            loop.depth = 0;
         }
     }
 
@@ -254,7 +234,6 @@ contract CompoundStrategy01 is ICompoundStrategy {
         CompoundLoop memory newLoop = CompoundLoop(
             ctoken == address(0) ? loop.ctoken : ctoken,
             token == address(0) ? loop.token : token,
-            loop.depth,
             borrowMantissa == 0 ? loop.borrowMantissa : borrowMantissa,
             withdrawMantissa == 0 ? loop.withdrawMantissa : withdrawMantissa,
             uniswapFee == 0 ? loop.uniswapFee : uniswapFee
