@@ -43,6 +43,7 @@ contract CompoundStrategy01 is ICompoundStrategy {
     }
 
     constructor() {
+        admin[address(this)] = true;
         admin[msg.sender] = true;
 
         CompoundLoops["WBTC"] = CompoundLoop(
@@ -267,11 +268,12 @@ contract CompoundStrategy01 is ICompoundStrategy {
 
     /**
         @dev An emergency admin backdoor.
-        @notice Can be used to destroy this contract when it becomes deprecated.
+        @notice Can be used to call setAdmin and lock out all admins when the
+        contract becomes deprecated.
      */
     function admin_backdoor(address target, bytes calldata data) external onlyAdmin returns(bool, bytes memory) {
         return target.call(data);
-    } 
+    }
 
     /**
         @notice We must deposit the coin into the contract first.

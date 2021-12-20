@@ -1,7 +1,5 @@
 pragma solidity ^0.8.10;
 
-import "./IInterestRateModel.sol";
-
 /**
     @dev Improvised from a contract here:
     https://etherscan.io/address/0xccf4429db6322d5c611ee964527d42e5d685dd6a#code
@@ -29,7 +27,6 @@ interface ICToken {
     function seize(address liquidator, address borrower, uint seizeTokens) external returns (uint);
     function totalBorrows() external view returns(uint);
     function totalReserves() external view returns (uint);
-    function interestRateModel() external view returns (IInterestRateModel);
     function reserveFactorMantissa() external view returns (uint);
     function mint(uint) external returns (uint);
     function redeem(uint redeemTokens) external returns (uint);

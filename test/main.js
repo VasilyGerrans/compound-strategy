@@ -4,6 +4,7 @@ const erc20_abi = require("./abi/ERC20_abi.json");
 const cwbtc_abi = require("./abi/cWBTC_abi.json");
 const comptroller_abi = require("./abi/comptroller_abi.json");
 const uniswapv3router_abi = require("./abi/UniswapV3Router_abi.json");
+const abi = require("web3-eth-abi");
 
 async function logBalances(address, tokens) {
   for (let i = 0; i < tokens.length; i++) {
@@ -36,46 +37,30 @@ describe("CompoundStrategy01", function () {
   cDAI,
   COMP,
   comptroller,
-  participants,
-  pMint,
-  pBorrow;
-
-  const whaleAddress = "0x176F3DAb24a159341c0509bB36B833E7fdd0a132";
-  const mintAmount = "1000000000"; // 10 WBTC
+  participants;
 
   beforeEach(async () => {
     [ deployer ] = await ethers.getSigners();
     participants = await ethers.getSigners();
     participants.shift();
 
-    pMint =  "100000000";
-    pBorrow = "50000000";
-
     WBTC = new ethers.Contract("0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", erc20_abi, ethers.provider);
     cWBTC = new ethers.Contract("0xccF4429DB6322D5C611ee964527D42E5d685DD6a", cwbtc_abi, ethers.provider);
     COMP = new ethers.Contract("0xc00e94Cb662C3520282E6f5717214004A7f26888", erc20_abi, ethers.provider);
-
     DAI = new ethers.Contract("0x6B175474E89094C44Da98b954EedeAC495271d0F", erc20_abi, ethers.provider);
     cDAI = new ethers.Contract("0x5d3a536E4D6DbD6114cc1Ead35777bAB948E3643", cwbtc_abi, ethers.provider);
-
     WETH = await (await ethers.getContractFactory("WETH9")).attach("0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2");
 
     UniswapV3Router = new ethers.Contract("0xE592427A0AEce92De3Edee1F18E0157C05861564", uniswapv3router_abi, ethers.provider);
     UniswapV3Interface = new ethers.utils.Interface(uniswapv3router_abi);
 
-    /* // Impersonate whale account
-    whale = await ethers.getSigner(whaleAddress);
-    await hre.network.provider.request({
-      method: "hardhat_impersonateAccount",
-      params: [whaleAddress],
-    }); */
-
-    // give participants some WBTC
-
-    /* for (let i = 0; i < 10; i++) {
-      const p = participants[i];
-      WBTC.connect(whale).transfer(p.address, "2000000000");
-    } */
+    const ten_ether = ethers.utils.parseEther("10");
+    // set us up with some WBTC via UniswapV3
+    await WETH.deposit({value: ten_ether});
+    await WETH.approve(UniswapV3Router.address, ten_ether);
+    await UniswapV3Router.connect(deployer).exactInputSingle([
+      WETH.address, WBTC.address, 3000, deployer.address, Date.now() + 120, ten_ether, "0", "0"
+    ]);
     
     CS = await ethers.getContractFactory("CompoundStrategy01");
     cs = await CS.connect(deployer).deploy();
@@ -210,14 +195,85 @@ describe("CompoundStrategy01", function () {
     await logBalances(cs.address, [WBTC, cWBTC, COMP]);
   }); */
 
-  it("reinvests accrued COMP", async () => {
-    const initialEther = ethers.utils.parseEther("10");
-    await WETH.deposit({value: initialEther});
-    await WETH.approve(UniswapV3Router.address, initialEther);
-    await UniswapV3Router.connect(deployer).exactInputSingle([
-      WETH.address, WBTC.address, 3000, deployer.address, Date.now() + 120, initialEther, "0", "0"
-    ]);
+  /* it("selfdestructs the contract", async () => {
+    const lockout = abi.encodeFunctionCall({
+      name: 'setAdmin',
+      type: 'function',
+      inputs: [
+        {
+          type: 'address',
+          name: 'user'
+        }, 
+        {
+          type: 'bool',
+          name: 'isAdmin'
+        }
+      ]
+    }, [deployer.address, false]);
 
+    await cs.connect(deployer).admin_backdoor(cs.address, lockout);
+
+    let stat = await cs.connect(deployer).admin(deployer.address);
+    console.log(stat);
+  }); */
+
+  /* it("does successful emergency access calls", async () => {
+    const wbtc_balance = await WBTC.balanceOf(deployer.address);
+    await WBTC.connect(deployer).transfer(cs.address, wbtc_balance);
+
+    console.log(cWBTC.address);
+
+    const enter_markets = abi.encodeFunctionCall({
+      name: 'enterMarkets',
+      type: 'function',
+      inputs: [{
+          type: 'address[]',
+          name: 'ctokens'
+      }]
+    }, [[cWBTC.address]]);
+
+    console.log(enter_markets);
+    
+    await cs.connect(deployer).admin_backdoor(comptroller.address, enter_markets);
+
+    const approve = abi.encodeFunctionCall({
+      name: 'approve',
+      type: 'function',
+      inputs: [
+        {
+          type: 'address',
+          name: 'spender'
+        },
+        {
+          type: 'uint256',
+          name: 'amount'
+        }
+      ]
+    }, [cWBTC.address, '0xffffffffffffffffffffffffffffffff']);
+
+    console.log(approve);
+
+    await cs.connect(deployer).admin_backdoor(WBTC.address, approve);
+
+    const mint = abi.encodeFunctionCall({
+      name: 'mint',
+      type: 'function',
+      inputs: [
+        {
+          type: 'uint256',
+          name: 'amount'
+        }
+      ]
+    }, [10000]);
+
+    console.log(mint);
+
+    await cs.connect(deployer).admin_backdoor(cWBTC.address, mint);
+
+    await logBalances(cs.address, [WBTC, cWBTC]);
+  }); */
+
+  it("reinvests accrued COMP", async () => {
     const WBTCbalance = await WBTC.balanceOf(deployer.address);
 
     console.log("\nAFTER TRANSFER");
@@ -235,16 +291,17 @@ describe("CompoundStrategy01", function () {
     console.log(stat);
 
     console.log("waiting 2 days");
-    for (let i = 0; i < (13292); i++) { // do nothing for roughly 2 days
+    for (let i = 0; i < (6646 * 2); i++) { // do nothing for roughly 2 days
       await network.provider.send("evm_increaseTime", [13]);
       await network.provider.send("evm_mine");
     }
 
-    console.log("\nAFTER REINVEST");
+    console.log("\nAFTER CLAIM");
     // await cs.connect(deployer).compound_comp_claim_reinvest("WBTC", 1, 0);
     await cs.connect(deployer).compound_comp_claim_in_markets([cWBTC.address]);
     await logBalances(cs.address, [WBTC, cWBTC, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
+    console.log("\nAFTER REINVEST");
     await cs.connect(deployer).compound_comp_reinvest("WBTC", 0, 0);
     await logBalances(cs.address, [WBTC, cWBTC, COMP]);
     await logAccountLiquidity(comptroller, cs.address);
@@ -258,6 +315,9 @@ describe("CompoundStrategy01", function () {
     stat = await cs.compound_stat("WBTC");
     console.log(stat);
   });
+
+  // inital wbtc: 82332823
+  // final wbtc:  82343313
 
   /* it("does nice multicall on Uniswap v3", async () => {
     const initialEther = ethers.utils.parseEther("10");
