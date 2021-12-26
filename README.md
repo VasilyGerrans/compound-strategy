@@ -18,7 +18,7 @@ Can be used as a standalone contract or as part of a larger ecosystem.
 * CompoundStrategy01.sol has an `admin_backdoor` function designed for emergency function calls by an admin in case of flaws in the contract itself or external contracts.
 * CompoundStrategy01.sol implements a default UniswapV3 swap for COMP reinvestment together with an optional `customSwapStrategy` address that can be used for implementing more advanced swapping strategies afrer deployment. The UniswapV3 swap always takes a path starting with COMP through WETH and into the chosen token.
 * All hardcoded addresses in the CompoundStrategy01.sol contructor are Ethereum Mainnet addresses.
-* Comments describing the main function behaviours are located in the ICompoundStrategy.sol interface. Descriptions of private or unimportant functions are located in CompoundStrategy01.sol.
+* Comments describing the main function behaviours are located in the ICompoundStrategy.sol interface. Descriptions of private or secondary functions are located in CompoundStrategy01.sol.
 * CompoundStrategy01.sol doesn't prevent the user from creating positions in new tokens while a position in another token exists. The user must do his own checks to prevent that behaviour.
 
 ## Test
