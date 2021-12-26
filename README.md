@@ -17,9 +17,20 @@ Can be used as a standalone contract or as part of a larger ecosystem.
 * CompoundStrategy01.sol implements a simple admin system to grant priviliged access to outside parties.
 * CompoundStrategy01.sol has an `admin_backdoor` function designed for emergency function calls by an admin in case of flaws in the contract itself or external contracts.
 * CompoundStrategy01.sol implements a default UniswapV3 swap for COMP reinvestment together with an optional `customSwapStrategy` address that can be used for implementing more advanced swapping strategies afrer deployment. The UniswapV3 swap always takes a path starting with COMP through WETH and into the chosen token.
-* All hardcoded addresses in the CompoundStrategy01.sol contructor are Ethereum Mainnet addresses.
+* All specified addresses in the test are Ethereum Mainnet addresses.
 * Comments describing the main function behaviours are located in the ICompoundStrategy.sol interface. Descriptions of private or secondary functions are located in CompoundStrategy01.sol.
 * CompoundStrategy01.sol doesn't prevent the user from creating positions in new tokens while a position in another token exists. The user must do his own checks to prevent that behaviour.
+* CompoundStrategy01.sol will allow a user to loop to the absolute possible maximum (until no further borrows against the deposited collateral is possible), but user ought to be aware of the risks.
+
+## Risks
+
+The contract's positions cannot be liquidated so long as its [accountLiquidity](https://compound.finance/docs/comptroller#account-liquidity) remains positive. Once accountLiquidity hits below 0, the user may no longer withdraw or borrow until it is once again increased. Other than contract logic error risks, the possibility of negative accountLiquidity constitutes the primary financial risk.
+
+A few factors to be aware of:
+
+* In the event that the contract deposits and borrows different underlying assets, if the price of the deposited asset(s) drops or the price of the borrowed asset(s) increases, accountLiquidity drops.
+* The contract's borrow balance is constantly incrementally growing. Hence, so long as the contract still has outstanding debt, accountLiquidity will continue to slowly shrink over time.
+* The deeper the position pyramid is wound, the smaller the contract's initial accountLiquidity will be upon opening a position. In the event that a user decides to wind a position to its maximum depth (for example, 50+ steps for 1 WBTC), the user's accountLiquidity will fall below zero in a matter of a few blocks. 
 
 ## Test
 
