@@ -41,71 +41,58 @@ contract CompoundStrategy01 is ICompoundStrategy {
         _;
     }
 
-    constructor() {
+    constructor(
+        address comptrollerAddress,
+        address compAddress,
+        address uniswapAddress,
+        address _wethAddress,
+        string[] memory loopNames,
+        CompoundLoop[] memory loops
+    ) {
         admin[address(this)] = true; // allows the contract to call itself via `admin_backdoor`
         admin[msg.sender] = true;
 
-        CompoundLoops["WBTC"] = CompoundLoop(
-            0xccF4429DB6322D5C611ee964527D42E5d685DD6a,
-            0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599,
-            0.95 * 1e18,    // 95%
-            0.995 * 1e18,   // 99.5%
-            3000
-        );
+        require(loopNames.length == loops.length, "loop info inconsistent");
+        for (uint256 i = 0; i < loopNames.length; i++) {
+            CompoundLoops[loopNames[i]] = loops[i];
+        }
 
-        CompoundLoops["COMP"] = CompoundLoop(
-            0x70e36f6BF80a52b3B46b3aF8e106CC0ed743E8e4,
-            0xc00e94Cb662C3520282E6f5717214004A7f26888, 
-            0.95 * 1e18,
-            0.995 * 1e18,
-            3000
-        );
-
-        CompoundLoops["DAI"] = CompoundLoop(
-            0x5d3a536E4D6DbD6114cc1Ead35777bAB948E3643,
-            0x6B175474E89094C44Da98b954EedeAC495271d0F,
-            0.95 * 1e18,
-            0.995 * 1e18,
-            500
-        );
-
-        CompoundLoops["USDC"] = CompoundLoop(
-            0x39AA39c021dfbaE8faC545936693aC917d5E7563,
-            0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48,
-            0.95 * 1e18,
-            0.995 * 1e18,
-            3000
-        );
-
-        comptroller = IComptroller(0x3d9819210A31b4961b30EF54bE2aeD79B9c9Cd3B);
-        comp = IERC20(0xc00e94Cb662C3520282E6f5717214004A7f26888);
-        uniswapV3Router = ISwapRouter(0xE592427A0AEce92De3Edee1F18E0157C05861564);
-        wethAddress = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+        comptroller = IComptroller(comptrollerAddress);
+        comp = IERC20(compAddress);
+        uniswapV3Router = ISwapRouter(uniswapAddress);
+        wethAddress = _wethAddress;
     }
 
+    /**
+        @notice Does not prevent pyramids from going too deep. 
+     */
     function compound_loop_deposit(string calldata Coin, uint256 Count) public onlyAdmin {
         CompoundLoop storage loop = CompoundLoops[Coin];
+        IERC20 token = IERC20(loop.token);
+
+        uint256 tokenAmt = token.balanceOf(address(this));
+        if (tokenAmt > 0) _compound_deposit(Coin, token.balanceOf(address(this)));
+
         for (uint256 i = 0; i < Count; i++) {
-            uint256 tokenAmt = IERC20(loop.token).balanceOf(address(this));
-
-            _compound_deposit(Coin, tokenAmt);
-
             uint256 B1 = _get_free_to_borrow(Coin);
-            require(B1 > 0, "not enough tokens in the pool");
+            require(B1 > 0, "not enough tokens for loop");
+
             _compound_borrow(Coin, B1);
+            _compound_deposit(Coin, token.balanceOf(address(this)));
         }
-        _compound_deposit(Coin, IERC20(loop.token).balanceOf(address(this)));
     }
 
     function compound_loop_withdraw_all(string calldata Coin) public onlyAdmin {
         CompoundLoop storage loop = CompoundLoops[Coin];
+
+        ICToken(loop.ctoken).accrueInterest();
+
         bool withdrawing = true;
         while(withdrawing) {  
-            uint256 safeRedeemAmt = _get_free_to_withdraw(Coin);
-            _compound_withdraw(Coin, safeRedeemAmt);
+            uint256 redeemAmt = _compound_withdraw(Coin, _get_free_to_withdraw(Coin));
 
             (,, uint256 borrowBalance, uint256 exchangeRateMantissa) = ICToken(loop.ctoken).getAccountSnapshot(address(this));
-            uint256 redeemedUnderlying = safeRedeemAmt.mul(exchangeRateMantissa).div(1e18);
+            uint256 redeemedUnderlying = redeemAmt.mul(exchangeRateMantissa).div(1e18);
             uint256 repayAmt = borrowBalance > redeemedUnderlying ? redeemedUnderlying : borrowBalance;
             if (repayAmt > 0) {
                 _compound_repay(Coin, repayAmt);
@@ -118,6 +105,9 @@ contract CompoundStrategy01 is ICompoundStrategy {
 
     function compound_loop_withdraw_part(string calldata Coin, uint256 Count) public onlyAdmin {
         CompoundLoop storage loop = CompoundLoops[Coin];
+
+        ICToken(loop.ctoken).accrueInterest();
+
         while(Count > 0) {
             Count--;
 
@@ -136,6 +126,7 @@ contract CompoundStrategy01 is ICompoundStrategy {
     }
 
     function compound_corrector_add(string calldata Coin) public onlyAdmin {
+        ICToken(CompoundLoops[Coin].ctoken).accrueInterest();
         uint256 borrow = _get_free_to_borrow(Coin);
         require(borrow > 0, "not enough tokens in pool");
         _compound_borrow(Coin, borrow);
@@ -144,6 +135,8 @@ contract CompoundStrategy01 is ICompoundStrategy {
 
     function compound_corrector_remove(string calldata Coin) public onlyAdmin {
         CompoundLoop storage loop = CompoundLoops[Coin];
+        
+        ICToken(loop.ctoken).accrueInterest();
 
         uint256 safeRedeemAmt = _get_free_to_withdraw(Coin);
         _compound_withdraw(Coin, safeRedeemAmt);
@@ -271,11 +264,22 @@ contract CompoundStrategy01 is ICompoundStrategy {
     }
 
     /**
-        @param tokenAmt indicates the amount of ctokens we want to redeem.
+        @param tokenAmt Indicates the amount of ctokens we want to redeem.
+        @notice Designed to handle an edge case where for some reason _get_free_to_withdraw
+        returned a value which is still too large. This can happen in a very deep pyramid,
+        where every arithmetic truncation removes vital info. In that case, we use a halved
+        input for withdrawals. This will make the withdrawal loop take more steps, but will
+        avoid the error.
      */
-    function _compound_withdraw(string calldata Coin, uint256 tokenAmt) private { 
+    function _compound_withdraw(string calldata Coin, uint256 tokenAmt) private returns(uint256) { 
         ICToken ctoken = ICToken(CompoundLoops[Coin].ctoken);
-        require(ctoken.redeem(tokenAmt) == 0, "_compound_withdraw fail");
+        if (ctoken.redeem(tokenAmt) > 0) {
+            uint256 halvedAmt = tokenAmt.div(2);
+            require(ctoken.redeem(halvedAmt) == 0, "_compound_withdraw fail");
+            return halvedAmt;
+        } else {
+            return tokenAmt;
+        }
     }
 
     /**
@@ -306,9 +310,13 @@ contract CompoundStrategy01 is ICompoundStrategy {
         CompoundLoop storage loop = CompoundLoops[Coin];
         uint256 underlyingAssetPrice = IPriceOracle(comptroller.oracle()).getUnderlyingPrice(loop.ctoken);
         (, uint256 accountLiquidity, ) = comptroller.getAccountLiquidity(address(this));
-        tokens = accountLiquidity
-            .mul(1e18).div(underlyingAssetPrice)    // convert to underlying tokens
-            .mul(loop.borrowMantissa).div(1e18);    // conservative amount
+        if (accountLiquidity == 0) {
+            tokens = 0;
+        } else {
+            tokens = accountLiquidity
+                .mul(1e18).div(underlyingAssetPrice)    // convert to underlying tokens
+                .mul(loop.borrowMantissa).div(1e18);    // conservative amount
+        }
     }
 
     /**
@@ -327,7 +335,7 @@ contract CompoundStrategy01 is ICompoundStrategy {
             uint256 cTokenDebt = borrowBalance
                 .mul(1e18).div(exchangeRateMantissa)        // convert to ctokens
                 .mul(1e18).div(collateralFactorMantissa);   // adjust for collateral factor
-            
+
             return cTokenBalance.sub(cTokenDebt).mul(loop.withdrawMantissa).div(1e18);
         }
     }

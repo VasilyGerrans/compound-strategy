@@ -31,9 +31,9 @@ Here are the demonstrated steps:
 1. Creates a `deployer` address with a lot of ether.
 2. Swaps 10 ether for max WBTC via UniswapV3.
 3. Deploys CompoundStrategy01.sol as deployer.
-4. Transfers the full amount of WBTC to CompoundStrategy01.sol.
-5. Winds a position with a depth count of 5.
-6. Wraps the position one more time (adjusting the position to depth of 6).
+4. Transfers the 1 WBTC to CompoundStrategy01.sol.
+5. Winds a position with a depth count of 20.
+6. Wraps the position one more time (adjusting the position to depth of 21).
 7. Waits for around 2 days (with a new block mined every 13 seconds).
 8. Claims all the accrued COMP rewards for that period.
 9. Reinvests it into WBTC via default swap strategy (UniswapV3 pools).

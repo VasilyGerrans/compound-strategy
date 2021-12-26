@@ -1,5 +1,6 @@
 require("dotenv").config();
 require("@nomiclabs/hardhat-waffle");
+require("@tenderly/hardhat-tenderly");
 
 // This is a sample Hardhat task. To learn how to create your own go to
 // https://hardhat.org/guides/create-task.html
@@ -19,11 +20,18 @@ task("accounts", "Prints the list of accounts", async (taskArgs, hre) => {
  */
 module.exports = {
   networks: {
+    local: {
+			url: 'http://127.0.0.1:8545', 
+      timeout: 2000000
+    },
     hardhat: {
       forking: {
         url: process.env.MAINNET_RPC,
       }
     }
+  },
+  mocha: {
+    timeout: 2000000
   },
   solidity: "0.8.10",
 };

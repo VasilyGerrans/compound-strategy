@@ -4,6 +4,7 @@ coverage
 coverage.json
 typechain
 legacy.js
+tenderly.yaml
 
 #Hardhat files
 cache
